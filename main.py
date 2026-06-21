@@ -8,6 +8,7 @@ from fastapi import FastAPI
 
 from app.core.logging import setup_logging
 from app.core.storage import init_minio
+from app.evaluation.handler import router as evaluation_router
 from app.media.handler import router as media_router
 
 # Configure logging once at application startup
@@ -53,6 +54,7 @@ app = FastAPI(
 
 # Register feature routers
 app.include_router(media_router)
+app.include_router(evaluation_router)
 
 @app.get("/health", tags=["Health"])
 async def health_check() -> dict:

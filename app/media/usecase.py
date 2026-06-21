@@ -13,6 +13,7 @@ from app.core.storage import download_file, list_objects, upload_file
 from app.media.ffmpeg import split_video_audio
 from app.media.scene_detect import detect_scenes_and_extract_frames
 from app.media.schemas import (
+    ConsolidateResponse,
     ExtractFramesResponse,
     FrameInfo,
     OcrResponse,
@@ -396,3 +397,158 @@ async def extract_text_and_store(
         shutil.rmtree(tmp_dir, ignore_errors=True)
         logger.info("Cleaned up temporary directory", tmp_dir=tmp_dir)
 
+
+async def consolidate_and_store(
+    upload_id: str,
+) -> ConsolidateResponse:
+    """
+    Orchestrate the consolidation of transcript and OCR data into a single
+    unified knowledge representation:
+
+    1. Download transcript.json and ocr.json from MinIO.
+    2. Parse and merge them into a structured consolidated document.
+    3. Upload the consolidated JSON to MinIO.
+    4. Clean up temporary files.
+
+    The consolidated output has three top-level sections:
+    - `transcript`: Full speech data with a concatenated full_text field.
+    - `visual_content`: Normalized OCR extraction results per frame.
+    - `summary`: Computed statistics and boolean flags for downstream evaluators.
+
+    Args:
+        upload_id: The upload ID from a prior /split response.
+
+    Returns:
+        ConsolidateResponse with metadata about the consolidated output.
+
+    Raises:
+        FileNotFoundError: If transcript.json or ocr.json is missing in MinIO.
+    """
+    tmp_dir = tempfile.mkdtemp(prefix=f"consolidate_{upload_id}_")
+
+    logger.info("Starting consolidate_and_store", upload_id=upload_id)
+
+    try:
+        # --- 1. Download transcript.json ---
+        transcript_object_key = f"{upload_id}/transcript.json"
+        local_transcript_path = os.path.join(tmp_dir, "transcript.json")
+
+        try:
+            download_file(
+                bucket=_DEFAULT_BUCKET,
+                object_name=transcript_object_key,
+                file_path=local_transcript_path,
+            )
+        except Exception as e:
+            raise FileNotFoundError(
+                f"Transcript not found for upload_id '{upload_id}'. "
+                f"Ensure /transcribe was called first."
+            ) from e
+
+        # --- 2. Download ocr.json ---
+        ocr_object_key = f"{upload_id}/ocr.json"
+        local_ocr_path = os.path.join(tmp_dir, "ocr.json")
+
+        try:
+            download_file(
+                bucket=_DEFAULT_BUCKET,
+                object_name=ocr_object_key,
+                file_path=local_ocr_path,
+            )
+        except Exception as e:
+            raise FileNotFoundError(
+                f"OCR results not found for upload_id '{upload_id}'. "
+                f"Ensure /ocr was called first."
+            ) from e
+
+        # --- 3. Parse both JSON files ---
+        with open(local_transcript_path, "r", encoding="utf-8") as f:
+            transcript_data = json.load(f)
+
+        with open(local_ocr_path, "r", encoding="utf-8") as f:
+            ocr_data = json.load(f)
+
+        # --- 4. Build the consolidated document ---
+        # Concatenate all transcript segments into a single string for easy downstream use
+        segments = transcript_data.get("segments", [])
+        full_text = " ".join(seg.get("text", "") for seg in segments).strip()
+
+        # Normalize visual content from OCR results
+        visual_content = []
+        has_handwriting = False
+        has_diagrams = False
+
+        for frame_entry in ocr_data:
+            content = frame_entry.get("content", {})
+
+            # Check for presence of handwriting and diagrams across all frames
+            handwritten = content.get("handwritten_text", "").strip()
+            diagrams = content.get("diagram_descriptions", "").strip()
+
+            if handwritten:
+                has_handwriting = True
+            if diagrams:
+                has_diagrams = True
+
+            visual_content.append({
+                "frame": frame_entry.get("frame_filename", "unknown"),
+                "typed_text": content.get("typed_text", "").strip(),
+                "handwritten_text": handwritten,
+                "diagram_descriptions": diagrams,
+            })
+
+        consolidated = {
+            "upload_id": upload_id,
+            "transcript": {
+                "language": transcript_data.get("language", "unknown"),
+                "language_probability": transcript_data.get("language_probability", 0.0),
+                "duration": transcript_data.get("duration", 0.0),
+                "full_text": full_text,
+                "segments": segments,
+            },
+            "visual_content": visual_content,
+            "summary": {
+                "total_segments": len(segments),
+                "total_frames": len(visual_content),
+                "total_duration_seconds": transcript_data.get("duration", 0.0),
+                "detected_language": transcript_data.get("language", "unknown"),
+                "has_handwriting": has_handwriting,
+                "has_diagrams": has_diagrams,
+            },
+        }
+
+        # --- 5. Write and upload consolidated.json ---
+        consolidated_path = os.path.join(tmp_dir, "consolidated.json")
+        with open(consolidated_path, "w", encoding="utf-8") as f:
+            json.dump(consolidated, f, ensure_ascii=False, indent=2)
+
+        consolidated_object_key = f"{upload_id}/consolidated.json"
+        upload_file(
+            bucket=_DEFAULT_BUCKET,
+            object_name=consolidated_object_key,
+            file_path=consolidated_path,
+            content_type="application/json",
+        )
+
+        logger.info(
+            "Consolidation and upload completed",
+            upload_id=upload_id,
+            transcript_segments=len(segments),
+            frames_processed=len(visual_content),
+            detected_language=transcript_data.get("language", "unknown"),
+        )
+
+        return ConsolidateResponse(
+            upload_id=upload_id,
+            bucket=_DEFAULT_BUCKET,
+            consolidated_object_key=consolidated_object_key,
+            transcript_segments=len(segments),
+            frames_processed=len(visual_content),
+            detected_language=transcript_data.get("language", "unknown"),
+            duration=transcript_data.get("duration", 0.0),
+        )
+
+    finally:
+        # --- 6. Clean up temp files ---
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        logger.info("Cleaned up temporary directory", tmp_dir=tmp_dir)

@@ -3,6 +3,8 @@ from fastapi import APIRouter, HTTPException, UploadFile, status
 from minio.error import S3Error
 
 from app.media.schemas import (
+    ConsolidateRequest,
+    ConsolidateResponse,
     ExtractFramesRequest,
     ExtractFramesResponse,
     OcrRequest,
@@ -12,6 +14,7 @@ from app.media.schemas import (
     TranscribeResponse,
 )
 from app.media.usecase import (
+    consolidate_and_store,
     extract_frames_and_store,
     extract_text_and_store,
     split_and_store,
@@ -255,6 +258,62 @@ async def ocr_frames(request: OcrRequest) -> OcrResponse:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An unexpected error occurred during OCR extraction.",
+        )
+
+    return result
+
+
+@router.post(
+    "/consolidate",
+    response_model=ConsolidateResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Consolidate transcript and OCR results into a unified document",
+    description=(
+        "Downloads the transcript and OCR JSON files for the given upload_id, "
+        "merges them into a single consolidated knowledge representation, "
+        "and stores the result in MinIO. This consolidated output serves as the "
+        "input for all downstream evaluation modules (Language mix, Grammar, Technical)."
+    ),
+)
+async def consolidate(request: ConsolidateRequest) -> ConsolidateResponse:
+    """
+    Handler for the consolidation endpoint.
+
+    Merges transcript.json and ocr.json into a unified consolidated.json
+    that serves as the sole input for the evaluation phase.
+    """
+    try:
+        result = await consolidate_and_store(
+            upload_id=request.upload_id,
+        )
+    except S3Error as e:
+        logger.error(
+            "Required artifacts not found in MinIO for upload_id",
+            upload_id=request.upload_id,
+            error=str(e),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Required artifacts not found for upload_id '{request.upload_id}'. "
+                   f"Ensure /transcribe and /ocr were called first.",
+        )
+    except FileNotFoundError as e:
+        logger.error("Prerequisite file not found during consolidation", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
+    except RuntimeError as e:
+        logger.error("Consolidation failed", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Consolidation failed: {e}",
+        )
+    except Exception as e:
+        logger.error("Unexpected error during consolidation", error=str(e), exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred during consolidation.",
         )
 
     return result

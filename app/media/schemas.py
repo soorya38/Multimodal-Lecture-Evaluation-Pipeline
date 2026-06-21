@@ -148,3 +148,34 @@ class OcrResponse(BaseModel):
     bucket: str = Field(..., description="MinIO bucket where the OCR results are stored.")
     ocr_object_key: str = Field(..., description="MinIO object key for the OCR JSON file.")
     frames_processed: int = Field(..., description="Total number of frames processed.")
+
+
+class ConsolidateRequest(BaseModel):
+    """Request model for the consolidation endpoint."""
+
+    upload_id: str = Field(
+        ...,
+        description="Upload ID from the /split endpoint whose transcript and OCR results will be merged.",
+    )
+
+
+class ConsolidateResponse(BaseModel):
+    """Response model for the consolidation endpoint."""
+
+    upload_id: str = Field(..., description="Upload ID that was processed.")
+    bucket: str = Field(..., description="MinIO bucket where the consolidated JSON is stored.")
+    consolidated_object_key: str = Field(
+        ..., description="MinIO object key for the consolidated JSON file."
+    )
+    transcript_segments: int = Field(
+        ..., description="Number of transcript segments included."
+    )
+    frames_processed: int = Field(
+        ..., description="Number of OCR frames included."
+    )
+    detected_language: str = Field(
+        ..., description="Language detected from the transcript."
+    )
+    duration: float = Field(
+        ..., description="Total audio duration in seconds."
+    )
