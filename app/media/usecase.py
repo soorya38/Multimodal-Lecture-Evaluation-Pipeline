@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import re
 import shutil
@@ -15,7 +16,9 @@ from app.media.schemas import (
     ExtractFramesResponse,
     FrameInfo,
     SplitMediaResponse,
+    TranscribeResponse,
 )
+from app.media.transcribe import transcribe_audio
 
 logger = structlog.get_logger(__name__)
 
@@ -214,4 +217,91 @@ def _parse_scene_number(filename: str) -> int:
     """
     match = re.search(r"Scene-(\d+)", filename)
     return int(match.group(1)) if match else 0
+
+
+async def transcribe_and_store(
+    upload_id: str,
+    model_size: str = "small",
+    language: str | None = None,
+) -> TranscribeResponse:
+    """
+    Orchestrate audio transcription from a previously split audio file:
+
+    1. Download the audio-only file from MinIO.
+    2. Run faster-whisper to transcribe the audio.
+    3. Upload the resulting transcript JSON to MinIO.
+    4. Clean up all temporary files.
+
+    Args:
+        upload_id: The upload ID from a prior /split response.
+        model_size: Size of the Whisper model to use.
+        language: ISO language code (e.g. 'en') to force, or None for auto-detect.
+
+    Returns:
+        TranscribeResponse with metadata for the transcript.
+
+    Raises:
+        FileNotFoundError: If the audio object does not exist in MinIO.
+        RuntimeError: If transcription fails.
+    """
+    tmp_dir = tempfile.mkdtemp(prefix=f"transcribe_{upload_id}_")
+    audio_object_key = f"{upload_id}/audio.mp3"
+
+    logger.info(
+        "Starting transcribe_and_store",
+        upload_id=upload_id,
+        model_size=model_size,
+        language=language,
+    )
+
+    try:
+        # --- 1. Download audio from MinIO ---
+        local_audio_path = os.path.join(tmp_dir, "audio.mp3")
+        download_file(
+            bucket=_DEFAULT_BUCKET,
+            object_name=audio_object_key,
+            file_path=local_audio_path,
+        )
+
+        # --- 2. Run faster-whisper transcription ---
+        # Inference is CPU-bound (unless using GPU), so we offload to a thread
+        transcript_result = await asyncio.to_thread(
+            transcribe_audio,
+            audio_path=local_audio_path,
+            model_size=model_size,
+            language=language,
+        )
+
+        # --- 3. Upload transcript JSON to MinIO ---
+        transcript_path = os.path.join(tmp_dir, "transcript.json")
+        with open(transcript_path, "w", encoding="utf-8") as f:
+            json.dump(transcript_result, f, ensure_ascii=False, indent=2)
+
+        transcript_object_key = f"{upload_id}/transcript.json"
+
+        upload_file(
+            bucket=_DEFAULT_BUCKET,
+            object_name=transcript_object_key,
+            file_path=transcript_path,
+            content_type="application/json",
+        )
+
+        logger.info(
+            "Transcription and upload completed",
+            upload_id=upload_id,
+            duration=transcript_result["duration"],
+        )
+
+        return TranscribeResponse(
+            upload_id=upload_id,
+            bucket=_DEFAULT_BUCKET,
+            transcript_object_key=transcript_object_key,
+            language_detected=transcript_result["language"],
+            duration=transcript_result["duration"],
+        )
+
+    finally:
+        # --- 4. Clean up temp files regardless of success or failure ---
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        logger.info("Cleaned up temporary directory", tmp_dir=tmp_dir)
 

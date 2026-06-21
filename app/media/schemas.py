@@ -95,3 +95,38 @@ class ExtractFramesResponse(BaseModel):
         ...,
         description="List of extracted frame metadata.",
     )
+
+
+class TranscribeRequest(BaseModel):
+    """Request model for the transcription endpoint."""
+
+    upload_id: str = Field(
+        ...,
+        description="Upload ID from the /split endpoint whose audio will be processed.",
+    )
+    model_size: str = Field(
+        default="small",
+        description="Size of the Whisper model to use ('tiny', 'base', 'small', 'medium', 'large-v3').",
+    )
+    language: str | None = Field(
+        default=None,
+        description="Optional ISO language code (e.g., 'en') to force transcription language. Auto-detects if omitted.",
+    )
+
+
+class SegmentInfo(BaseModel):
+    """Metadata for a transcribed speech segment."""
+
+    start: float = Field(..., description="Start time of the segment in seconds.")
+    end: float = Field(..., description="End time of the segment in seconds.")
+    text: str = Field(..., description="Transcribed text for this segment.")
+
+
+class TranscribeResponse(BaseModel):
+    """Response model for the transcription endpoint."""
+
+    upload_id: str = Field(..., description="Upload ID that was processed.")
+    bucket: str = Field(..., description="MinIO bucket where the transcript is stored.")
+    transcript_object_key: str = Field(..., description="MinIO object key for the transcript JSON file.")
+    language_detected: str = Field(..., description="Language detected or forced.")
+    duration: float = Field(..., description="Total duration of the audio processed in seconds.")

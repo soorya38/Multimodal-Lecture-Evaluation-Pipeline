@@ -6,8 +6,14 @@ from app.media.schemas import (
     ExtractFramesRequest,
     ExtractFramesResponse,
     SplitMediaResponse,
+    TranscribeRequest,
+    TranscribeResponse,
 )
-from app.media.usecase import extract_frames_and_store, split_and_store
+from app.media.usecase import (
+    extract_frames_and_store,
+    split_and_store,
+    transcribe_and_store,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -143,6 +149,59 @@ async def extract_frames(request: ExtractFramesRequest) -> ExtractFramesResponse
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An unexpected error occurred during frame extraction.",
+        )
+
+    return result
+
+
+@router.post(
+    "/transcribe",
+    response_model=TranscribeResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Transcribe audio using Whisper",
+    description=(
+        "Downloads the audio file associated with the upload_id, "
+        "runs faster-whisper to generate a transcript, and stores "
+        "the resulting JSON in MinIO."
+    ),
+)
+async def transcribe(request: TranscribeRequest) -> TranscribeResponse:
+    """
+    Handler for the transcription endpoint.
+    """
+    try:
+        result = await transcribe_and_store(
+            upload_id=request.upload_id,
+            model_size=request.model_size,
+            language=request.language,
+        )
+    except S3Error as e:
+        logger.error(
+            "Audio not found in MinIO for upload_id",
+            upload_id=request.upload_id,
+            error=str(e),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Audio not found for upload_id '{request.upload_id}'. Ensure /split was called.",
+        )
+    except FileNotFoundError as e:
+        logger.error("File not found during transcription", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
+    except RuntimeError as e:
+        logger.error("Transcription failed", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Transcription failed: {e}",
+        )
+    except Exception as e:
+        logger.error("Unexpected error during transcription", error=str(e), exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred during transcription.",
         )
 
     return result
