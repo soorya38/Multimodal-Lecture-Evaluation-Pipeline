@@ -7,6 +7,7 @@ import structlog
 from fastapi import FastAPI
 
 from app.core.logging import setup_logging
+from app.core.storage import init_minio
 
 # Configure logging once at application startup
 setup_logging(os.getenv("LOG_LEVEL", "INFO"))
@@ -22,6 +23,13 @@ async def lifespan(app: FastAPI):
     """
     # Startup logic
     logger.info("Starting application...")
+    
+    # Initialize MinIO client
+    try:
+        init_minio()
+    except Exception as e:
+        logger.error("Application failed to start due to MinIO initialization error", error=str(e))
+        raise
 
     # Yield control back to FastAPI so it can start accepting requests
     yield
