@@ -9,16 +9,18 @@ import uuid
 import structlog
 from fastapi import UploadFile
 
-from app.core.storage import download_file, upload_file
+from app.core.storage import download_file, list_objects, upload_file
 from app.media.ffmpeg import split_video_audio
 from app.media.scene_detect import detect_scenes_and_extract_frames
 from app.media.schemas import (
     ExtractFramesResponse,
     FrameInfo,
+    OcrResponse,
     SplitMediaResponse,
     TranscribeResponse,
 )
 from app.media.transcribe import transcribe_audio
+from app.media.ocr import extract_text_from_frames
 
 logger = structlog.get_logger(__name__)
 
@@ -302,6 +304,95 @@ async def transcribe_and_store(
 
     finally:
         # --- 4. Clean up temp files regardless of success or failure ---
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        logger.info("Cleaned up temporary directory", tmp_dir=tmp_dir)
+
+
+async def extract_text_and_store(
+    upload_id: str,
+) -> OcrResponse:
+    """
+    Orchestrate multimodal text extraction from previously extracted video frames:
+
+    1. Discover all frame keys for this upload_id in MinIO.
+    2. Download them to a temporary directory.
+    3. Run Gemini OCR (in a separate thread) across all frames.
+    4. Save the combined OCR results to a JSON file.
+    5. Upload the JSON to MinIO.
+    6. Clean up temporary files.
+
+    Args:
+        upload_id: The upload ID from a prior /split response.
+
+    Returns:
+        OcrResponse with metadata about the extraction.
+
+    Raises:
+        FileNotFoundError: If no frames are found for the upload_id.
+    """
+    tmp_dir = tempfile.mkdtemp(prefix=f"ocr_{upload_id}_")
+
+    logger.info("Starting extract_text_and_store via Gemini", upload_id=upload_id)
+
+    try:
+        # --- 1. Find all frames in MinIO ---
+        prefix = f"{upload_id}/frames/"
+        frame_keys = list_objects(bucket=_DEFAULT_BUCKET, prefix=prefix)
+        
+        if not frame_keys:
+            raise FileNotFoundError(f"No frames found in MinIO for upload_id '{upload_id}'. Ensure /extract-frames was called first.")
+
+        # --- 2. Download frames ---
+        local_frame_paths = []
+        for key in frame_keys:
+            filename = os.path.basename(key)
+            local_path = os.path.join(tmp_dir, filename)
+            download_file(
+                bucket=_DEFAULT_BUCKET,
+                object_name=key,
+                file_path=local_path,
+            )
+            local_frame_paths.append(local_path)
+
+        # Sort the paths so OCR happens sequentially by scene/frame number
+        local_frame_paths.sort()
+
+        # --- 3. Run Gemini OCR ---
+        # Network IO bound, offload to thread
+        ocr_results = await asyncio.to_thread(
+            extract_text_from_frames,
+            frame_paths=local_frame_paths,
+        )
+
+        # --- 4. Save results to JSON ---
+        ocr_path = os.path.join(tmp_dir, "ocr.json")
+        with open(ocr_path, "w", encoding="utf-8") as f:
+            json.dump(ocr_results, f, ensure_ascii=False, indent=2)
+
+        # --- 5. Upload JSON to MinIO ---
+        ocr_object_key = f"{upload_id}/ocr.json"
+        upload_file(
+            bucket=_DEFAULT_BUCKET,
+            object_name=ocr_object_key,
+            file_path=ocr_path,
+            content_type="application/json",
+        )
+
+        logger.info(
+            "Gemini OCR and upload completed",
+            upload_id=upload_id,
+            frames_processed=len(ocr_results),
+        )
+
+        return OcrResponse(
+            upload_id=upload_id,
+            bucket=_DEFAULT_BUCKET,
+            ocr_object_key=ocr_object_key,
+            frames_processed=len(ocr_results),
+        )
+
+    finally:
+        # --- 6. Clean up temp files ---
         shutil.rmtree(tmp_dir, ignore_errors=True)
         logger.info("Cleaned up temporary directory", tmp_dir=tmp_dir)
 

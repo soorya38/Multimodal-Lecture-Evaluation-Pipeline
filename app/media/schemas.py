@@ -130,3 +130,21 @@ class TranscribeResponse(BaseModel):
     transcript_object_key: str = Field(..., description="MinIO object key for the transcript JSON file.")
     language_detected: str = Field(..., description="Language detected or forced.")
     duration: float = Field(..., description="Total duration of the audio processed in seconds.")
+
+
+class OcrRequest(BaseModel):
+    """Request model for the OCR endpoint."""
+
+    upload_id: str = Field(
+        ...,
+        description="Upload ID from the /split endpoint whose frames will be processed.",
+    )
+
+
+class OcrResponse(BaseModel):
+    """Response model for the OCR endpoint."""
+
+    upload_id: str = Field(..., description="Upload ID that was processed.")
+    bucket: str = Field(..., description="MinIO bucket where the OCR results are stored.")
+    ocr_object_key: str = Field(..., description="MinIO object key for the OCR JSON file.")
+    frames_processed: int = Field(..., description="Total number of frames processed.")

@@ -140,3 +140,33 @@ def download_file(
             error=str(e),
         )
         raise
+
+
+def list_objects(bucket: str, prefix: str) -> list[str]:
+    """
+    List all object keys in a MinIO bucket that match a specific prefix.
+
+    Args:
+        bucket: The MinIO bucket name.
+        prefix: The prefix to search for (e.g., "1234abcd/frames/").
+
+    Returns:
+        A list of object keys.
+    """
+    client = get_minio_client()
+
+    logger.info("Listing objects in MinIO", bucket=bucket, prefix=prefix)
+    
+    try:
+        objects = client.list_objects(bucket_name=bucket, prefix=prefix, recursive=True)
+        keys = [obj.object_name for obj in objects if obj.object_name]
+        logger.info("Listed objects", bucket=bucket, prefix=prefix, count=len(keys))
+        return keys
+    except S3Error as e:
+        logger.error(
+            "Failed to list objects in MinIO",
+            bucket=bucket,
+            prefix=prefix,
+            error=str(e),
+        )
+        raise

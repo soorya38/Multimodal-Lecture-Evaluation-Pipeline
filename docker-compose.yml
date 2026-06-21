@@ -14,6 +14,7 @@ services:
       - MINIO_SECRET_KEY=minioadmin
       - MINIO_SECURE=false
       - MINIO_DEFAULT_BUCKET=lectures
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
     depends_on:
       - minio
     volumes:

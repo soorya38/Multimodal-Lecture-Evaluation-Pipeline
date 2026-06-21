@@ -5,12 +5,15 @@ from minio.error import S3Error
 from app.media.schemas import (
     ExtractFramesRequest,
     ExtractFramesResponse,
+    OcrRequest,
+    OcrResponse,
     SplitMediaResponse,
     TranscribeRequest,
     TranscribeResponse,
 )
 from app.media.usecase import (
     extract_frames_and_store,
+    extract_text_and_store,
     split_and_store,
     transcribe_and_store,
 )
@@ -202,6 +205,56 @@ async def transcribe(request: TranscribeRequest) -> TranscribeResponse:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An unexpected error occurred during transcription.",
+        )
+    return result
+
+
+@router.post(
+    "/ocr",
+    response_model=OcrResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Extract rich text and diagrams from video frames using Gemini",
+    description=(
+        "Downloads all frames associated with the upload_id, "
+        "uploads them to the Gemini API to extract typed text, handwriting, and diagram descriptions, "
+        "and stores the resulting consolidated JSON in MinIO."
+    ),
+)
+async def ocr_frames(request: OcrRequest) -> OcrResponse:
+    """
+    Handler for the multimodal OCR endpoint.
+    """
+    try:
+        result = await extract_text_and_store(
+            upload_id=request.upload_id,
+        )
+    except S3Error as e:
+        logger.error(
+            "Frames not found in MinIO for upload_id",
+            upload_id=request.upload_id,
+            error=str(e),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Frames not found for upload_id '{request.upload_id}'. Ensure /extract-frames was called.",
+        )
+    except FileNotFoundError as e:
+        logger.error("File not found during OCR", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
+    except RuntimeError as e:
+        logger.error("Gemini OCR extraction failed", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"OCR extraction failed: {e}",
+        )
+    except Exception as e:
+        logger.error("Unexpected error during OCR", error=str(e), exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred during OCR extraction.",
         )
 
     return result
