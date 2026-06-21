@@ -54,3 +54,50 @@ def get_minio_client() -> Minio:
     if minio_client is None:
         raise RuntimeError("MinIO client has not been initialized. Call init_minio() first.")
     return minio_client
+
+
+def upload_file(
+    bucket: str,
+    object_name: str,
+    file_path: str,
+    content_type: str,
+) -> None:
+    """
+    Upload a local file to a MinIO bucket.
+
+    Args:
+        bucket: Target bucket name.
+        object_name: The key / path under which the object will be stored.
+        file_path: Absolute path to the local file to upload.
+        content_type: MIME type for the uploaded object (e.g. "video/mp4").
+    """
+    client = get_minio_client()
+
+    logger.info(
+        "Uploading file to MinIO",
+        bucket=bucket,
+        object_name=object_name,
+        file_path=file_path,
+        content_type=content_type,
+    )
+
+    try:
+        client.fput_object(
+            bucket,
+            object_name,
+            file_path,
+            content_type=content_type,
+        )
+        logger.info(
+            "Successfully uploaded file to MinIO",
+            bucket=bucket,
+            object_name=object_name,
+        )
+    except S3Error as e:
+        logger.error(
+            "Failed to upload file to MinIO",
+            bucket=bucket,
+            object_name=object_name,
+            error=str(e),
+        )
+        raise
