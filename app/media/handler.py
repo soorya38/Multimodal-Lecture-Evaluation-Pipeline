@@ -1,8 +1,13 @@
 import structlog
 from fastapi import APIRouter, HTTPException, UploadFile, status
+from minio.error import S3Error
 
-from app.media.schemas import SplitMediaResponse
-from app.media.usecase import split_and_store
+from app.media.schemas import (
+    ExtractFramesRequest,
+    ExtractFramesResponse,
+    SplitMediaResponse,
+)
+from app.media.usecase import extract_frames_and_store, split_and_store
 
 logger = structlog.get_logger(__name__)
 
@@ -80,6 +85,64 @@ async def split_media(file: UploadFile) -> SplitMediaResponse:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An unexpected error occurred during processing.",
+        )
+
+    return result
+
+
+@router.post(
+    "/extract-frames",
+    response_model=ExtractFramesResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Extract key frames from a previously split video",
+    description=(
+        "Uses PySceneDetect to detect scene changes in the video-only file "
+        "produced by /split, extracts representative frames as JPEGs, "
+        "and stores them in MinIO."
+    ),
+)
+async def extract_frames(request: ExtractFramesRequest) -> ExtractFramesResponse:
+    """
+    Handler for the frame extraction endpoint.
+
+    Takes an upload_id from a previous /split call, downloads the video from MinIO,
+    runs scene detection, extracts frames, and uploads them back to MinIO.
+    """
+    try:
+        result = await extract_frames_and_store(
+            upload_id=request.upload_id,
+            threshold=request.threshold,
+            num_images=request.num_images,
+        )
+    except S3Error as e:
+        # The video object for this upload_id doesn't exist in MinIO
+        logger.error(
+            "Video not found in MinIO for upload_id",
+            upload_id=request.upload_id,
+            error=str(e),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Video not found for upload_id '{request.upload_id}'. "
+                   f"Ensure /split was called first.",
+        )
+    except FileNotFoundError as e:
+        logger.error("File not found during frame extraction", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
+    except RuntimeError as e:
+        logger.error("Scene detection failed", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Frame extraction failed: {e}",
+        )
+    except Exception as e:
+        logger.error("Unexpected error during frame extraction", error=str(e), exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred during frame extraction.",
         )
 
     return result

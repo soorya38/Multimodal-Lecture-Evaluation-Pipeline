@@ -101,3 +101,42 @@ def upload_file(
             error=str(e),
         )
         raise
+
+
+def download_file(
+    bucket: str,
+    object_name: str,
+    file_path: str,
+) -> None:
+    """
+    Download an object from a MinIO bucket to a local file path.
+
+    Args:
+        bucket: Source bucket name.
+        object_name: The key / path of the object to download.
+        file_path: Local destination path where the file will be written.
+    """
+    client = get_minio_client()
+
+    logger.info(
+        "Downloading file from MinIO",
+        bucket=bucket,
+        object_name=object_name,
+        file_path=file_path,
+    )
+
+    try:
+        client.fget_object(bucket, object_name, file_path)
+        logger.info(
+            "Successfully downloaded file from MinIO",
+            bucket=bucket,
+            object_name=object_name,
+        )
+    except S3Error as e:
+        logger.error(
+            "Failed to download file from MinIO",
+            bucket=bucket,
+            object_name=object_name,
+            error=str(e),
+        )
+        raise
