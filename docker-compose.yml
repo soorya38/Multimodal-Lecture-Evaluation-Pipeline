@@ -14,9 +14,10 @@ services:
       - MINIO_SECRET_KEY=minioadmin
       - MINIO_SECURE=false
       - MINIO_DEFAULT_BUCKET=lectures
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - OLLAMA_HOST=http://ollama:11434
     depends_on:
       - minio
+      - ollama
     volumes:
       # Mount the current directory for live reload support during development
       - .:/app
@@ -39,5 +40,17 @@ services:
       - minio_data:/data
     command: server /data --console-address ":9001"
 
+  ollama:
+    image: ollama/ollama:latest
+    container_name: lecture-eval-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    # Start the server in the background, pull the models, then bring server to foreground
+    entrypoint: >
+      /bin/sh -c "ollama serve & sleep 3 && ollama pull llama3.2 && ollama pull llava-phi3 && wait"
+
 volumes:
   minio_data:
+  ollama_data:

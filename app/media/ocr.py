@@ -1,10 +1,8 @@
 import json
 import os
-from typing import Any
-
 import structlog
-from google import genai
-from google.genai import types
+from typing import Any
+import ollama
 
 logger = structlog.get_logger(__name__)
 
@@ -27,7 +25,7 @@ If a specific type of content is not present, set its value to an empty string.
 
 def extract_text_from_frames(frame_paths: list[str]) -> list[dict[str, Any]]:
     """
-    Extract text and diagram descriptions from a list of frame images using Gemini.
+    Extract text and diagram descriptions from a list of frame images using local Ollama model.
 
     Args:
         frame_paths: List of absolute paths to the frame JPEG images.
@@ -35,59 +33,46 @@ def extract_text_from_frames(frame_paths: list[str]) -> list[dict[str, Any]]:
     Returns:
         A list of dictionaries containing the extracted rich text for each frame.
     """
-    # Initialize the Gemini client. It automatically picks up GEMINI_API_KEY from env.
-    try:
-        client = genai.Client()
-    except Exception as e:
-        logger.error("Failed to initialize Gemini Client. Check GEMINI_API_KEY.", error=str(e))
-        raise RuntimeError("Missing or invalid GEMINI_API_KEY.") from e
-
-    logger.info("Starting multimodal extraction from frames via Gemini", frame_count=len(frame_paths))
+    ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+    client = ollama.Client(host=ollama_host)
+    
+    logger.info("Starting multimodal extraction from frames via local Ollama", frame_count=len(frame_paths))
 
     results = []
     
-    # We use gemini-2.5-flash as it is fast and excellent at multimodal OCR.
-    model_name = "gemini-2.5-flash"
+    # Use llava-phi3 (3.8B) for OCR
+    model_name = "llava-phi3"
 
     for path in frame_paths:
         if not os.path.isfile(path):
-            logger.warning("Frame file not found during Gemini OCR, skipping", path=path)
+            logger.warning("Frame file not found during OCR, skipping", path=path)
             continue
 
         try:
-            # Upload the image file to the Gemini File API.
-            # Using File API is safer for large/multiple images than inline base64.
-            logger.info("Uploading frame to Gemini", frame_path=path)
-            uploaded_file = client.files.upload(file=path)
+            logger.info("Requesting multimodal OCR from Ollama", frame_path=path, model=model_name)
             
-            # Request content from the model
-            logger.info("Requesting multimodal OCR from Gemini", frame_path=path, model=model_name)
-            response = client.models.generate_content(
+            # Ollama expects the image path or bytes
+            response = client.chat(
                 model=model_name,
-                contents=[
-                    types.Content(role="user", parts=[
-                        types.Part.from_uri(file_uri=uploaded_file.uri, mime_type="image/jpeg"),
-                        types.Part.from_text(text=OCR_SYSTEM_PROMPT),
-                    ])
+                messages=[
+                    {
+                        "role": "user",
+                        "content": OCR_SYSTEM_PROMPT,
+                        "images": [path]
+                    }
                 ],
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0.0,  # low temperature for deterministic OCR
-                ),
+                format="json",
+                options={
+                    "temperature": 0.0,
+                }
             )
             
-            # Clean up the file from Gemini storage
-            client.files.delete(name=uploaded_file.name)
-
-            response_text = response.text or "{}"
-            
-            # Gemini might return wrapped json despite instructions, strip it if necessary
-            if response_text.startswith("```json"):
-                response_text = response_text[7:-3]
-            elif response_text.startswith("```"):
-                response_text = response_text[3:-3]
-                
-            parsed_json = json.loads(response_text)
+            content = response['message']['content']
+            if isinstance(content, dict):
+                parsed_json = content
+            else:
+                response_text = str(content or "{}").strip()
+                parsed_json = json.loads(response_text)
             
             results.append({
                 "frame_filename": os.path.basename(path),
@@ -95,7 +80,7 @@ def extract_text_from_frames(frame_paths: list[str]) -> list[dict[str, Any]]:
             })
 
         except Exception as e:
-            logger.error("Failed to run Gemini OCR on frame", path=path, error=str(e), exc_info=True)
+            logger.error("Failed to run local OCR on frame", path=path, error=str(e), exc_info=True)
             results.append({
                 "frame_filename": os.path.basename(path),
                 "content": {

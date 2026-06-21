@@ -1,61 +1,50 @@
 import json
+import os
 from typing import Any
 
 import structlog
-from google import genai
-from google.genai import types
+import ollama
 
 logger = structlog.get_logger(__name__)
 
 
-def _get_gemini_client() -> genai.Client:
+def _call_ollama(prompt: str) -> str:
     """
-    Initialize and return a Gemini API client.
-    Automatically picks up GEMINI_API_KEY from environment variables.
+    Send a prompt to local Ollama (llama3.2) and return the raw response text.
+    Uses low temperature for deterministic, rubric-based scoring and constrained JSON format.
     """
-    try:
-        return genai.Client()
-    except Exception as e:
-        logger.error("Failed to initialize Gemini Client. Check GEMINI_API_KEY.", error=str(e))
-        raise RuntimeError("Missing or invalid GEMINI_API_KEY.") from e
+    ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+    client = ollama.Client(host=ollama_host)
 
-
-def _call_gemini(prompt: str) -> str:
-    """
-    Send a prompt to Gemini 2.5 Flash and return the raw response text.
-    Uses low temperature for deterministic, rubric-based scoring.
-    """
-    client = _get_gemini_client()
-
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=[
-            types.Content(role="user", parts=[
-                types.Part.from_text(text=prompt),
-            ])
+    response = client.chat(
+        model="llama3.2",
+        messages=[
+            {
+                "role": "user",
+                "content": prompt,
+            }
         ],
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            temperature=0.1,  # Low temperature for consistent scoring
-        ),
+        format="json",
+        options={
+            "temperature": 0.1,  # Low temperature for consistent scoring
+        }
     )
 
-    text = response.text or "{}"
-
-    # Strip markdown wrappers if Gemini includes them despite instructions
-    if text.startswith("```json"):
-        text = text[7:-3]
-    elif text.startswith("```"):
-        text = text[3:-3]
-
-    return text.strip()
+    text = response['message']['content']
+    
+    if isinstance(text, dict):
+        text = json.dumps(text)
+    elif not text:
+        text = "{}"
+        
+    return str(text).strip()
 
 
 def evaluate_technical(consolidated: dict[str, Any], subject: str) -> float:
     """
     Evaluate the technical accuracy of the lecture content against the given subject.
 
-    Sends the full transcript and visual content to Gemini with a rubric that scores:
+    Sends the full transcript and visual content to Ollama with a rubric that scores:
     - Correctness of concepts explained
     - Depth and completeness of coverage
     - Accuracy of examples, diagrams, and formulas
@@ -101,10 +90,10 @@ Return ONLY a JSON object with this exact structure:
 {{"technical_score": <number between 0 and 100>}}
 """
 
-    logger.info("Running technical evaluation via Gemini", subject=subject)
+    logger.info("Running technical evaluation via local Ollama", subject=subject)
 
     try:
-        result_text = _call_gemini(prompt)
+        result_text = _call_ollama(prompt)
         result = json.loads(result_text)
         score = float(result.get("technical_score", 0.0))
         # Clamp to valid range
@@ -155,10 +144,10 @@ Return ONLY a JSON object with this exact structure:
 {{"grammatical_score": <number between 0 and 100>}}
 """
 
-    logger.info("Running grammar evaluation via Gemini")
+    logger.info("Running grammar evaluation via local Ollama")
 
     try:
-        result_text = _call_gemini(prompt)
+        result_text = _call_ollama(prompt)
         result = json.loads(result_text)
         score = float(result.get("grammatical_score", 0.0))
         score = max(0.0, min(100.0, score))
@@ -206,10 +195,10 @@ Return ONLY a JSON object with this exact structure:
 {{"english_percentage": <number between 0 and 100>, "tamil_percentage": <number between 0 and 100>}}
 """
 
-    logger.info("Running language mix evaluation via Gemini")
+    logger.info("Running language mix evaluation via local Ollama")
 
     try:
-        result_text = _call_gemini(prompt)
+        result_text = _call_ollama(prompt)
         result = json.loads(result_text)
 
         english_pct = float(result.get("english_percentage", 100.0))
