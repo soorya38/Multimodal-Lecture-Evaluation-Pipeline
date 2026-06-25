@@ -111,26 +111,28 @@ async def extract_frames_and_store(
     upload_id: str,
     threshold: float = 27.0,
     num_images: int = 1,
+    frame_skip: int = 0,
 ) -> ExtractFramesResponse:
     """
-    Orchestrate frame extraction from a previously split video:
+    Orchestrate the extraction of frames from a previously split video:
 
     1. Download the video-only file from MinIO.
-    2. Run PySceneDetect to detect scenes and extract representative frames.
-    3. Upload each extracted frame to MinIO.
+    2. Run PySceneDetect to find scenes and extract frames.
+    3. Upload the resulting frames to MinIO under the same upload_id.
     4. Clean up all temporary files.
 
     Args:
         upload_id: The upload ID from a prior /split response.
-        threshold: ContentDetector sensitivity (lower = more sensitive).
-        num_images: Number of frames to extract per detected scene.
+        threshold: The threshold for PySceneDetect.
+        num_images: The number of images to extract per scene.
+        frame_skip: Number of frames to skip during detection.
 
     Returns:
-        ExtractFramesResponse with metadata for all extracted frames.
+        ExtractFramesResponse with metadata about the uploaded frames.
 
     Raises:
         FileNotFoundError: If the video object does not exist in MinIO.
-        RuntimeError: If scene detection or frame extraction fails.
+        RuntimeError: If scene detection fails.
     """
     tmp_dir = tempfile.mkdtemp(prefix=f"frame_extract_{upload_id}_")
     video_object_key = f"{upload_id}/video.mp4"
@@ -140,6 +142,7 @@ async def extract_frames_and_store(
         upload_id=upload_id,
         threshold=threshold,
         num_images=num_images,
+        frame_skip=frame_skip,
     )
 
     try:
@@ -163,6 +166,7 @@ async def extract_frames_and_store(
             output_dir=frames_dir,
             threshold=threshold,
             num_images=num_images,
+            frame_skip=frame_skip,
         )
 
         # --- 3. Upload each frame to MinIO ---

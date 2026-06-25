@@ -125,6 +125,7 @@ async def extract_frames(request: ExtractFramesRequest) -> ExtractFramesResponse
             upload_id=request.upload_id,
             threshold=request.threshold,
             num_images=request.num_images,
+            frame_skip=request.frame_skip,
         )
     except S3Error as e:
         # The video object for this upload_id doesn't exist in MinIO

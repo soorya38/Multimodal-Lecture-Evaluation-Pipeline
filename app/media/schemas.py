@@ -59,6 +59,14 @@ class ExtractFramesRequest(BaseModel):
             "1 = middle frame only (recommended for OCR pipelines)."
         ),
     )
+    frame_skip: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Number of frames to skip during scene detection to speed up processing. "
+            "If 0, it will auto-calculate a safe skip for long videos (>1hr)."
+        ),
+    )
 
 
 class FrameInfo(BaseModel):
