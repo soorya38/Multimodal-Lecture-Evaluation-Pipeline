@@ -1,5 +1,5 @@
-# Use a slim Python 3.13 image for a lightweight runtime
-FROM python:3.13-slim-bookworm
+# Use a slim Python 3.12 image for a lightweight runtime (3.13 has runtime issues with ctranslate2)
+FROM python:3.12-slim-bookworm
 
 # Prevent Python from writing .pyc files and enable unbuffered logging
 ENV PYTHONDONTWRITEBYTECODE=1
