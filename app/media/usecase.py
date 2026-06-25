@@ -224,7 +224,7 @@ def _parse_scene_number(filename: str) -> int:
 
 async def transcribe_and_store(
     upload_id: str,
-    model_size: str = "small",
+    model_size: str = "base",
     language: str | None = None,
 ) -> TranscribeResponse:
     """

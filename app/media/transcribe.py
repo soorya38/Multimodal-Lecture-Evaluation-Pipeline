@@ -1,3 +1,10 @@
+import os
+
+# Prevent OpenMP deadlocks in Docker/CPU environments
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+
 import structlog
 from faster_whisper import WhisperModel
 
@@ -9,7 +16,7 @@ _model_instance: WhisperModel | None = None
 _current_model_size: str | None = None
 
 
-def get_whisper_model(model_size: str = "small", device: str = "auto", compute_type: str = "default") -> WhisperModel:
+def get_whisper_model(model_size: str = "base", device: str = "auto", compute_type: str = "default") -> WhisperModel:
     """
     Get or initialize the faster-whisper model.
     """
@@ -22,7 +29,12 @@ def get_whisper_model(model_size: str = "small", device: str = "auto", compute_t
             device=device,
             compute_type=compute_type,
         )
-        _model_instance = WhisperModel(model_size, device=device, compute_type=compute_type)
+        _model_instance = WhisperModel(
+            model_size,
+            device=device,
+            compute_type=compute_type,
+            cpu_threads=4,
+        )
         _current_model_size = model_size
         logger.info("faster-whisper model loaded successfully")
 
@@ -31,7 +43,7 @@ def get_whisper_model(model_size: str = "small", device: str = "auto", compute_t
 
 def transcribe_audio(
     audio_path: str,
-    model_size: str = "small",
+    model_size: str = "base",
     language: str | None = None,
 ) -> dict:
     """

@@ -105,7 +105,7 @@ class TranscribeRequest(BaseModel):
         description="Upload ID from the /split endpoint whose audio will be processed.",
     )
     model_size: str = Field(
-        default="small",
+        default="base",
         description="Size of the Whisper model to use ('tiny', 'base', 'small', 'medium', 'large-v3').",
     )
     language: str | None = Field(
