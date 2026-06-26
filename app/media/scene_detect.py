@@ -6,6 +6,10 @@ from scenedetect.scene_manager import save_images
 
 logger = structlog.get_logger(__name__)
 
+HOUR_IN_SEC = 3600
+IMG_TYPE_JPG = "jpg"
+IMAGE_QUALITY = 95
+FRAME_SKIP_FOR_LONG_VID = 2
 
 def detect_scenes_and_extract_frames(
     video_path: str,
@@ -55,10 +59,10 @@ def detect_scenes_and_extract_frames(
     # Auto-calculate frame_skip for long videos if not explicitly provided
     if frame_skip == 0:
         duration_sec = video.duration.get_seconds() if video.duration else 0
-        if duration_sec > 3600:
+        if duration_sec > HOUR_IN_SEC:
             # Skip roughly 2 frames per hour of video length to drastically speed up
             # processing for multi-hour lectures, up to a reasonable cap.
-            frame_skip = min(int((duration_sec / 3600) * 2), 30)
+            frame_skip = min(int((duration_sec / HOUR_IN_SEC) * FRAME_SKIP_FOR_LONG_VID), 30)
             logger.info("Auto-calculated frame_skip for long video", duration_sec=duration_sec, frame_skip=frame_skip)
 
     scene_manager = SceneManager()
@@ -89,8 +93,8 @@ def detect_scenes_and_extract_frames(
         video=video,
         num_images=num_images,
         output_dir=output_dir,
-        image_extension="jpg",
-        encoder_param=95,  # JPEG quality (0-100)
+        image_extension=IMG_TYPE_JPG,
+        encoder_param=IMAGE_QUALITY,
         show_progress=False,
     )
 

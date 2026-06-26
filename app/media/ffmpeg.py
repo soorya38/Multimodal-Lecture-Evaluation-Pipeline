@@ -50,7 +50,7 @@ async def split_video_audio(
     )
 
     process = await asyncio.create_subprocess_exec(
-        *cmd,
+        *cmd, #variadic expansion
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )

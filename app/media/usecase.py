@@ -25,6 +25,15 @@ from app.media.ocr import extract_text_from_frames
 
 logger = structlog.get_logger(__name__)
 
+MB_TO_BYTES = 1024 * 1024
+INPUT_FILE_NAME = "input.mp4"
+EXTRACTED_VIDEO_FILE_NAME = "video.mp4"
+EXTRACTED_AUDIO_FILE_NAME = "audio.mp3"
+CONTENT_TYPE_VIDEO = "video/mp4"
+CONTENT_TYPE_AUDIO = "audio/mpeg"
+CONTENT_TYPE_IMAGE = "image/jpeg"
+EXTRACTED_FRAMES_DIR = "frames"
+
 # Default bucket — sourced from the same env var used by storage init
 _DEFAULT_BUCKET = os.getenv("MINIO_DEFAULT_BUCKET", "lectures")
 
@@ -44,7 +53,7 @@ async def split_and_store(file: UploadFile) -> SplitMediaResponse:
     Returns:
         SplitMediaResponse with the MinIO object keys for both outputs.
     """
-    upload_id = uuid.uuid4().hex
+    upload_id = uuid.uuid4().int
     tmp_dir = tempfile.mkdtemp(prefix=f"media_split_{upload_id}_")
 
     logger.info(
@@ -56,35 +65,35 @@ async def split_and_store(file: UploadFile) -> SplitMediaResponse:
 
     try:
         # --- 1. Save uploaded file to disk ---
-        input_path = os.path.join(tmp_dir, "input.mp4")
+        input_path = os.path.join(tmp_dir, INPUT_FILE_NAME)
         with open(input_path, "wb") as f:
             # Stream the upload in 1 MiB chunks to avoid loading the entire file into memory
-            while chunk := await file.read(1024 * 1024):
+            while chunk := await file.read(MB_TO_BYTES):
                 f.write(chunk)
 
         logger.info("Saved uploaded file to disk", path=input_path)
 
         # --- 2. Run FFmpeg ---
-        video_out = os.path.join(tmp_dir, "video.mp4")
-        audio_out = os.path.join(tmp_dir, "audio.mp3")
+        video_out = os.path.join(tmp_dir, EXTRACTED_VIDEO_FILE_NAME)
+        audio_out = os.path.join(tmp_dir, EXTRACTED_AUDIO_FILE_NAME)
 
         await split_video_audio(input_path, video_out, audio_out)
 
         # --- 3. Upload results to MinIO ---
-        video_key = f"{upload_id}/video.mp4"
-        audio_key = f"{upload_id}/audio.mp3"
+        video_key = f"{upload_id}/{EXTRACTED_VIDEO_FILE_NAME}"
+        audio_key = f"{upload_id}/{EXTRACTED_AUDIO_FILE_NAME}"
 
         upload_file(
             bucket=_DEFAULT_BUCKET,
             object_name=video_key,
             file_path=video_out,
-            content_type="video/mp4",
+            content_type=CONTENT_TYPE_VIDEO,
         )
         upload_file(
             bucket=_DEFAULT_BUCKET,
             object_name=audio_key,
             file_path=audio_out,
-            content_type="audio/mpeg",
+            content_type=CONTENT_TYPE_AUDIO,
         )
 
         logger.info(
@@ -108,7 +117,7 @@ async def split_and_store(file: UploadFile) -> SplitMediaResponse:
 
 
 async def extract_frames_and_store(
-    upload_id: str,
+    upload_id: int,
     threshold: float = 27.0,
     num_images: int = 1,
     frame_skip: int = 0,
@@ -135,7 +144,7 @@ async def extract_frames_and_store(
         RuntimeError: If scene detection fails.
     """
     tmp_dir = tempfile.mkdtemp(prefix=f"frame_extract_{upload_id}_")
-    video_object_key = f"{upload_id}/video.mp4"
+    video_object_key = f"{upload_id}/{EXTRACTED_VIDEO_FILE_NAME}"
 
     logger.info(
         "Starting extract_frames_and_store",
@@ -147,7 +156,7 @@ async def extract_frames_and_store(
 
     try:
         # --- 1. Download video from MinIO ---
-        local_video_path = os.path.join(tmp_dir, "video.mp4")
+        local_video_path = os.path.join(tmp_dir, EXTRACTED_VIDEO_FILE_NAME)
         download_file(
             bucket=_DEFAULT_BUCKET,
             object_name=video_object_key,
@@ -157,7 +166,7 @@ async def extract_frames_and_store(
         # --- 2. Run scene detection + frame extraction ---
         # PySceneDetect is CPU-bound (decodes video frames with OpenCV),
         # so offload to a thread to avoid blocking the async event loop.
-        frames_dir = os.path.join(tmp_dir, "frames")
+        frames_dir = os.path.join(tmp_dir, EXTRACTED_FRAMES_DIR)
         os.makedirs(frames_dir, exist_ok=True)
 
         frame_paths = await asyncio.to_thread(
@@ -174,13 +183,13 @@ async def extract_frames_and_store(
 
         for frame_path in frame_paths:
             filename = os.path.basename(frame_path)
-            object_key = f"{upload_id}/frames/{filename}"
+            object_key = f"{upload_id}/{EXTRACTED_FRAMES_DIR}/{filename}"
 
             upload_file(
                 bucket=_DEFAULT_BUCKET,
                 object_name=object_key,
                 file_path=frame_path,
-                content_type="image/jpeg",
+                content_type=CONTENT_TYPE_IMAGE,
             )
 
             # Parse scene number from the filename pattern:
@@ -227,7 +236,7 @@ def _parse_scene_number(filename: str) -> int:
 
 
 async def transcribe_and_store(
-    upload_id: str,
+    upload_id: int,
     model_size: str = "base",
     language: str | None = None,
 ) -> TranscribeResponse:
@@ -252,7 +261,7 @@ async def transcribe_and_store(
         RuntimeError: If transcription fails.
     """
     tmp_dir = tempfile.mkdtemp(prefix=f"transcribe_{upload_id}_")
-    audio_object_key = f"{upload_id}/audio.mp3"
+    audio_object_key = f"{upload_id}/{EXTRACTED_AUDIO_FILE_NAME}"
 
     logger.info(
         "Starting transcribe_and_store",
@@ -263,7 +272,7 @@ async def transcribe_and_store(
 
     try:
         # --- 1. Download audio from MinIO ---
-        local_audio_path = os.path.join(tmp_dir, "audio.mp3")
+        local_audio_path = os.path.join(tmp_dir, EXTRACTED_AUDIO_FILE_NAME)
         download_file(
             bucket=_DEFAULT_BUCKET,
             object_name=audio_object_key,
@@ -314,7 +323,7 @@ async def transcribe_and_store(
 
 
 async def extract_text_and_store(
-    upload_id: str,
+    upload_id: int,
 ) -> OcrResponse:
     """
     Orchestrate multimodal text extraction from previously extracted video frames:
@@ -403,7 +412,7 @@ async def extract_text_and_store(
 
 
 async def consolidate_and_store(
-    upload_id: str,
+    upload_id: int,
 ) -> ConsolidateResponse:
     """
     Orchestrate the consolidation of transcript and OCR data into a single

@@ -37,7 +37,7 @@ async def run_full_pipeline(
     2. Extracts frames and transcribes audio concurrently.
     3. Runs OCR on the extracted frames.
     4. Consolidates transcript and OCR results.
-    5. Evaluates the consolidated document (technical, grammar, language mix) concurrently via Gemini.
+    5. Evaluates the consolidated document (technical, grammar, language mix) concurrently.
     """
     logger.info("Starting full end-to-end pipeline", filename=file.filename, person=person_name, subject=subject)
 
@@ -47,6 +47,7 @@ async def run_full_pipeline(
     upload_id = split_result.upload_id
 
     # Step 2: Extract frames + Transcribe audio (run concurrently)
+    #TODO: check if parallel processing or better is possible
     logger.info("Pipeline Step 2: Frame Extraction & Transcription", upload_id=upload_id)
     await asyncio.gather(
         extract_frames_and_store(upload_id=upload_id),
@@ -83,7 +84,7 @@ async def run_full_pipeline(
     )
 
 
-def _download_consolidated(upload_id: str, object_key: str) -> dict:
+def _download_consolidated(upload_id: int, object_key: str) -> dict:
     """Helper to download and parse the consolidated JSON from MinIO."""
     tmp_dir = tempfile.mkdtemp(prefix=f"eval_{upload_id}_")
     try:

@@ -40,6 +40,7 @@ async def evaluate_lecture(
         )
 
     try:
+        # executes the entire evaluvation pipeline
         result = await run_full_pipeline(
             file=video,
             person_name=person_name,

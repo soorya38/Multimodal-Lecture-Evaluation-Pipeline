@@ -7,7 +7,7 @@ class SplitMediaResponse(BaseModel):
     Contains the MinIO object keys for the separated video and audio files.
     """
 
-    upload_id: str = Field(
+    upload_id: int = Field(
         ...,
         description="Unique identifier for this upload session.",
         examples=["a1b2c3d4-e5f6-7890-abcd-ef1234567890"],
@@ -35,7 +35,7 @@ class ExtractFramesRequest(BaseModel):
     Takes an upload_id from a previous /split response and optional tuning parameters.
     """
 
-    upload_id: str = Field(
+    upload_id: int = Field(
         ...,
         description="Upload ID from the /split endpoint whose video will be processed.",
         examples=["a1b2c3d4e5f67890abcdef1234567890"],
@@ -86,7 +86,7 @@ class FrameInfo(BaseModel):
 class ExtractFramesResponse(BaseModel):
     """Response model for the frame extraction endpoint."""
 
-    upload_id: str = Field(
+    upload_id: int = Field(
         ...,
         description="Upload ID that was processed.",
     )
@@ -108,7 +108,7 @@ class ExtractFramesResponse(BaseModel):
 class TranscribeRequest(BaseModel):
     """Request model for the transcription endpoint."""
 
-    upload_id: str = Field(
+    upload_id: int = Field(
         ...,
         description="Upload ID from the /split endpoint whose audio will be processed.",
     )
@@ -133,7 +133,7 @@ class SegmentInfo(BaseModel):
 class TranscribeResponse(BaseModel):
     """Response model for the transcription endpoint."""
 
-    upload_id: str = Field(..., description="Upload ID that was processed.")
+    upload_id: int = Field(..., description="Upload ID that was processed.")
     bucket: str = Field(..., description="MinIO bucket where the transcript is stored.")
     transcript_object_key: str = Field(..., description="MinIO object key for the transcript JSON file.")
     language_detected: str = Field(..., description="Language detected or forced.")
@@ -143,7 +143,7 @@ class TranscribeResponse(BaseModel):
 class OcrRequest(BaseModel):
     """Request model for the OCR endpoint."""
 
-    upload_id: str = Field(
+    upload_id: int = Field(
         ...,
         description="Upload ID from the /split endpoint whose frames will be processed.",
     )
@@ -152,7 +152,7 @@ class OcrRequest(BaseModel):
 class OcrResponse(BaseModel):
     """Response model for the OCR endpoint."""
 
-    upload_id: str = Field(..., description="Upload ID that was processed.")
+    upload_id: int = Field(..., description="Upload ID that was processed.")
     bucket: str = Field(..., description="MinIO bucket where the OCR results are stored.")
     ocr_object_key: str = Field(..., description="MinIO object key for the OCR JSON file.")
     frames_processed: int = Field(..., description="Total number of frames processed.")
@@ -161,7 +161,7 @@ class OcrResponse(BaseModel):
 class ConsolidateRequest(BaseModel):
     """Request model for the consolidation endpoint."""
 
-    upload_id: str = Field(
+    upload_id: int = Field(
         ...,
         description="Upload ID from the /split endpoint whose transcript and OCR results will be merged.",
     )
@@ -170,7 +170,7 @@ class ConsolidateRequest(BaseModel):
 class ConsolidateResponse(BaseModel):
     """Response model for the consolidation endpoint."""
 
-    upload_id: str = Field(..., description="Upload ID that was processed.")
+    upload_id: int = Field(..., description="Upload ID that was processed.")
     bucket: str = Field(..., description="MinIO bucket where the consolidated JSON is stored.")
     consolidated_object_key: str = Field(
         ..., description="MinIO object key for the consolidated JSON file."
