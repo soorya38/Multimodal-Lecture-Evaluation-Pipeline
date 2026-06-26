@@ -12,7 +12,7 @@ from app.evaluation.handler import router as evaluation_router
 from app.media.handler import router as media_router
 
 # Configure logging once at application startup
-setup_logging(os.getenv("LOG_LEVEL", "INFO"))
+setup_logging(os.getenv("LOG_LEVEL", "DEBUG"))
 
 # Get a bound logger instance for this specific module
 logger = structlog.get_logger(__name__)
@@ -28,7 +28,19 @@ async def lifespan(app: FastAPI):
     
     # Initialize MinIO client
     try:
-        init_minio()
+        endpoint = os.getenv("MINIO_ENDPOINT", "localhost:9000")
+        access_key = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
+        secret_key = os.getenv("MINIO_SECRET_KEY", "minioadmin")
+        secure = os.getenv("MINIO_SECURE", "false").lower() == "true"
+        default_bucket = os.getenv("MINIO_DEFAULT_BUCKET", "lectures")
+        
+        init_minio(
+            endpoint=endpoint,
+            access_key=access_key,
+            secret_key=secret_key,
+            secure=secure,
+            default_bucket=default_bucket,
+        )
     except Exception as e:
         logger.error("Application failed to start due to MinIO initialization error", error=str(e))
         raise
@@ -69,4 +81,5 @@ if __name__ == "__main__":
     import uvicorn
     
     port = int(os.getenv("PORT", "8000"))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+
+    #Note: univorn server started from the docker file.

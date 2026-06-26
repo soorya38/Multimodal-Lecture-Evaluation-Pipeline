@@ -8,17 +8,17 @@ logger = structlog.get_logger(__name__)
 # Global MinIO client instance
 minio_client: Minio | None = None
 
-def init_minio() -> None:
+def init_minio(
+    endpoint: str, 
+    access_key: str,
+    secret_key: str,
+    secure: bool,
+    default_bucket: str,
+    ) -> None:
     """
     Initialize the MinIO client and ensure default buckets exist.
     """
     global minio_client
-    
-    endpoint = os.getenv("MINIO_ENDPOINT", "localhost:9000")
-    access_key = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
-    secret_key = os.getenv("MINIO_SECRET_KEY", "minioadmin")
-    secure = os.getenv("MINIO_SECURE", "false").lower() == "true"
-    default_bucket = os.getenv("MINIO_DEFAULT_BUCKET", "lectures")
     
     logger.info("Initializing MinIO client", endpoint=endpoint, secure=secure, bucket=default_bucket)
     
@@ -101,6 +101,9 @@ def upload_file(
             error=str(e),
         )
         raise
+    except Exception as e:
+        logger.error("Unexpected error uploading file to MinIO", error=str(e))
+        raise
 
 
 def download_file(
@@ -140,6 +143,9 @@ def download_file(
             error=str(e),
         )
         raise
+    except Exception as e:
+        logger.error("Unexpected error downloading file from MinIO", error=str(e))
+        raise
 
 
 def list_objects(bucket: str, prefix: str) -> list[str]:
@@ -169,4 +175,7 @@ def list_objects(bucket: str, prefix: str) -> list[str]:
             prefix=prefix,
             error=str(e),
         )
+        raise
+    except Exception as e:
+        logger.error("Unexpected error listing objects in MinIO", error=str(e))
         raise
