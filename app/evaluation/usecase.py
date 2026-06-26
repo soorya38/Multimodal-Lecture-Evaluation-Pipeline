@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import shutil
+import time
 
 import structlog
 from fastapi import UploadFile
@@ -39,42 +40,55 @@ async def run_full_pipeline(
     4. Consolidates transcript and OCR results.
     5. Evaluates the consolidated document (technical, grammar, language mix) concurrently.
     """
+    pipeline_start = time.monotonic()
     logger.info("Starting full end-to-end pipeline", filename=file.filename, person=person_name, subject=subject)
 
     # Step 1: Split video/audio
+    step_start = time.monotonic()
     logger.info("Pipeline Step 1: Split Media")
     split_result = await split_and_store(file)
     upload_id = split_result.upload_id
+    logger.info("Pipeline Step 1 completed", upload_id=upload_id, wall_time=f"{time.monotonic() - step_start:.1f}s")
 
     # Step 2: Extract frames + Transcribe audio (run concurrently)
-    #TODO: check if parallel processing or better is possible
-    logger.info("Pipeline Step 2: Frame Extraction & Transcription", upload_id=upload_id)
+    step_start = time.monotonic()
+    logger.info("Pipeline Step 2: Frame Extraction & Transcription (parallel)", upload_id=upload_id)
     await asyncio.gather(
         extract_frames_and_store(upload_id=upload_id),
         transcribe_and_store(upload_id=upload_id),
     )
+    logger.info("Pipeline Step 2 completed", upload_id=upload_id, wall_time=f"{time.monotonic() - step_start:.1f}s")
 
     # Step 3: OCR on frames
+    step_start = time.monotonic()
     logger.info("Pipeline Step 3: OCR on frames", upload_id=upload_id)
     await extract_text_and_store(upload_id=upload_id)
+    logger.info("Pipeline Step 3 completed", upload_id=upload_id, wall_time=f"{time.monotonic() - step_start:.1f}s")
 
     # Step 4: Consolidate
+    step_start = time.monotonic()
     logger.info("Pipeline Step 4: Consolidation", upload_id=upload_id)
     consolidate_result = await consolidate_and_store(upload_id=upload_id)
+    logger.info("Pipeline Step 4 completed", upload_id=upload_id, wall_time=f"{time.monotonic() - step_start:.1f}s")
 
     # Step 5: Download the consolidated JSON to feed into evaluations
+    step_start = time.monotonic()
     logger.info("Pipeline Step 5: Preparing data for evaluation", upload_id=upload_id)
     consolidated_data = _download_consolidated(upload_id, consolidate_result.consolidated_object_key)
+    logger.info("Pipeline Step 5 completed", upload_id=upload_id, wall_time=f"{time.monotonic() - step_start:.1f}s")
 
-    # Step 6: Run evaluations concurrently via Gemini
-    logger.info("Pipeline Step 6: Running LLM evaluations", upload_id=upload_id)
+    # Step 6: Run evaluations concurrently via Ollama
+    step_start = time.monotonic()
+    logger.info("Pipeline Step 6: Running LLM evaluations (parallel)", upload_id=upload_id)
     technical_score, grammatical_score, language_mix = await asyncio.gather(
         asyncio.to_thread(evaluate_technical, consolidated_data, subject),
         asyncio.to_thread(evaluate_grammar, consolidated_data),
         asyncio.to_thread(evaluate_language_mix, consolidated_data),
     )
+    logger.info("Pipeline Step 6 completed", upload_id=upload_id, wall_time=f"{time.monotonic() - step_start:.1f}s")
 
-    logger.info("Full pipeline completed successfully", upload_id=upload_id)
+    total_elapsed = time.monotonic() - pipeline_start
+    logger.info("Full pipeline completed successfully", upload_id=upload_id, total_wall_time=f"{total_elapsed:.1f}s")
 
     return EvaluateResponse(
         technical_score=technical_score,

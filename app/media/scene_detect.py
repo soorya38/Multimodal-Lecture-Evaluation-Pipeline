@@ -88,6 +88,13 @@ def detect_scenes_and_extract_frames(
         scene_list = [(video.base_timecode, video_duration)]
 
     # Extract and save representative frames for each scene
+    logger.info(
+        "Saving representative frames to disk",
+        scenes_to_process=len(scene_list),
+        num_images_per_scene=num_images,
+        output_dir=output_dir,
+    )
+
     image_map = save_images(
         scene_list=scene_list,
         video=video,
@@ -96,6 +103,11 @@ def detect_scenes_and_extract_frames(
         image_extension=IMG_TYPE_JPG,
         encoder_param=IMAGE_QUALITY,
         show_progress=False,
+    )
+
+    logger.info(
+        "Finished saving frames to disk",
+        scenes_saved=len(image_map),
     )
 
     # Flatten the {scene_number: [paths]} dict into a single list

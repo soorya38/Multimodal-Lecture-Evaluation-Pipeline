@@ -1,15 +1,28 @@
-# Use a slim Python 3.12 image for a lightweight runtime (3.13 has runtime issues with ctranslate2)
-FROM python:3.12-slim-bookworm
+# NVIDIA CUDA runtime with cuDNN for GPU-accelerated ML workloads
+# (faster-whisper / CTranslate2 uses CUDA directly for transcription)
+FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
 
 # Prevent Python from writing .pyc files and enable unbuffered logging
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# Install system dependencies required for video processing and OpenCV
+# Make all NVIDIA GPUs visible inside the container
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+# Install Python 3.12, ffmpeg, and system dependencies required for
+# video processing, OpenCV, and general ML workloads
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.12 \
+    python3.12-dev \
+    python3.12-venv \
+    python3-pip \
     ffmpeg \
     libgl1 \
     libglib2.0-0 \
+    curl \
+    && ln -sf /usr/bin/python3.12 /usr/bin/python3 \
+    && ln -sf /usr/bin/python3.12 /usr/bin/python \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the uv package manager binary into the image

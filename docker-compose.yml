@@ -15,6 +15,12 @@ services:
       - MINIO_SECURE=false
       - MINIO_DEFAULT_BUCKET=lectures
       - OLLAMA_HOST=http://ollama:11434
+      # GPU-accelerated Whisper: use CUDA with float16 precision and the best model
+      - WHISPER_DEVICE=cuda
+      - WHISPER_COMPUTE_TYPE=float16
+      - WHISPER_MODEL_SIZE=large-v3
+      # OCR concurrency — increase if GPU has headroom
+      - OCR_MAX_WORKERS=8
     depends_on:
       - minio
       - ollama
@@ -24,6 +30,16 @@ services:
       # Use an anonymous volume to prevent overwriting the container's virtual environment
       # with the host's local .venv directory (crucial when host is macOS/Windows and container is Linux)
       - /app/.venv
+    # Shared memory for PyTorch / CUDA inter-process communication
+    shm_size: '2g'
+    # Reserve all available NVIDIA GPUs for Whisper transcription
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     # Run with reload enabled for a better development experience
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
@@ -47,6 +63,14 @@ services:
       - "11434:11434"
     volumes:
       - ollama_data:/root/.ollama
+    # Reserve all available NVIDIA GPUs for Ollama LLM/vision inference
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     # Start the server in the background, pull the models, then bring server to foreground
     entrypoint: >
       /bin/sh -c "ollama serve & sleep 3 && ollama pull llama3.2 && ollama pull llava-phi3 && wait"

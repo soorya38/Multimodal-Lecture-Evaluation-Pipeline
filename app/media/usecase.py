@@ -4,7 +4,9 @@ import os
 import re
 import shutil
 import tempfile
+import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import structlog
 from fastapi import UploadFile
@@ -36,6 +38,10 @@ EXTRACTED_FRAMES_DIR = "frames"
 
 # Default bucket — sourced from the same env var used by storage init
 _DEFAULT_BUCKET = os.getenv("MINIO_DEFAULT_BUCKET", "lectures")
+
+# Dynamic I/O thread pool size for parallel MinIO uploads/downloads.
+# Scales with available CPUs, capped at 16 to avoid overwhelming the network.
+_IO_MAX_WORKERS = min(os.cpu_count() or 4, 16)
 
 
 async def split_and_store(file: UploadFile) -> SplitMediaResponse:
@@ -178,10 +184,18 @@ async def extract_frames_and_store(
             frame_skip=frame_skip,
         )
 
-        # --- 3. Upload each frame to MinIO ---
-        frames: list[FrameInfo] = []
+        # --- 3. Upload each frame to MinIO (parallel) ---
+        total_frames = len(frame_paths)
+        logger.info(
+            "Starting parallel frame upload to MinIO",
+            upload_id=upload_id,
+            total_frames=total_frames,
+        )
 
-        for frame_path in frame_paths:
+        upload_start = time.monotonic()
+        frames: list[FrameInfo] = [None] * total_frames  # type: ignore[list-item]
+
+        def _upload_single_frame(index: int, frame_path: str) -> FrameInfo:
             filename = os.path.basename(frame_path)
             object_key = f"{upload_id}/{EXTRACTED_FRAMES_DIR}/{filename}"
 
@@ -192,25 +206,36 @@ async def extract_frames_and_store(
                 content_type=CONTENT_TYPE_IMAGE,
             )
 
-            # Parse scene number from the filename pattern:
-            # e.g. "video-Scene-001-01.jpg" → scene_number = 1
-            scene_number = _parse_scene_number(filename)
-
-            frames.append(FrameInfo(
-                scene_number=scene_number,
+            logger.info(
+                "Uploaded frame to MinIO",
+                frame_index=f"{index + 1}/{total_frames}",
                 object_key=object_key,
-            ))
+            )
 
+            scene_number = _parse_scene_number(filename)
+            return FrameInfo(scene_number=scene_number, object_key=object_key)
+
+        with ThreadPoolExecutor(max_workers=_IO_MAX_WORKERS) as executor:
+            futures = {
+                executor.submit(_upload_single_frame, i, fp): i
+                for i, fp in enumerate(frame_paths)
+            }
+            for future in futures:
+                idx = futures[future]
+                frames[idx] = future.result()
+
+        upload_elapsed = time.monotonic() - upload_start
         logger.info(
             "Frame extraction and upload completed",
             upload_id=upload_id,
-            frame_count=len(frames),
+            frame_count=total_frames,
+            upload_wall_time=f"{upload_elapsed:.1f}s",
         )
 
         return ExtractFramesResponse(
             upload_id=upload_id,
             bucket=_DEFAULT_BUCKET,
-            frame_count=len(frames),
+            frame_count=total_frames,
             frames=frames,
         )
 
@@ -352,13 +377,22 @@ async def extract_text_and_store(
         # --- 1. Find all frames in MinIO ---
         prefix = f"{upload_id}/frames/"
         frame_keys = list_objects(bucket=_DEFAULT_BUCKET, prefix=prefix)
-        
+
         if not frame_keys:
             raise FileNotFoundError(f"No frames found in MinIO for upload_id '{upload_id}'. Ensure /extract-frames was called first.")
 
-        # --- 2. Download frames ---
-        local_frame_paths = []
-        for key in frame_keys:
+        total_frames = len(frame_keys)
+        logger.info(
+            "Found frames in MinIO, starting parallel download",
+            upload_id=upload_id,
+            total_frames=total_frames,
+        )
+
+        # --- 2. Download frames (parallel) ---
+        download_start = time.monotonic()
+        local_frame_paths: list[str | None] = [None] * total_frames  # type: ignore[list-item]
+
+        def _download_single_frame(index: int, key: str) -> str:
             filename = os.path.basename(key)
             local_path = os.path.join(tmp_dir, filename)
             download_file(
@@ -366,16 +400,39 @@ async def extract_text_and_store(
                 object_name=key,
                 file_path=local_path,
             )
-            local_frame_paths.append(local_path)
+            logger.info(
+                "Downloaded frame from MinIO",
+                frame_index=f"{index + 1}/{total_frames}",
+                object_key=key,
+            )
+            return local_path
+
+        with ThreadPoolExecutor(max_workers=_IO_MAX_WORKERS) as executor:
+            futures = {
+                executor.submit(_download_single_frame, i, key): i
+                for i, key in enumerate(frame_keys)
+            }
+            for future in futures:
+                idx = futures[future]
+                local_frame_paths[idx] = future.result()
+
+        download_elapsed = time.monotonic() - download_start
+        logger.info(
+            "Frame download completed",
+            upload_id=upload_id,
+            total_frames=total_frames,
+            download_wall_time=f"{download_elapsed:.1f}s",
+        )
 
         # Sort the paths so OCR happens sequentially by scene/frame number
-        local_frame_paths.sort()
+        sorted_paths = sorted(p for p in local_frame_paths if p is not None)
 
-        # --- 3. Run Gemini OCR ---
-        # Network IO bound, offload to thread
+        # --- 3. Run OCR (already parallelised internally) ---
+        # extract_text_from_frames uses its own ThreadPoolExecutor for Ollama calls,
+        # so we offload the orchestrating call to a thread to avoid blocking the event loop.
         ocr_results = await asyncio.to_thread(
             extract_text_from_frames,
-            frame_paths=local_frame_paths,
+            frame_paths=sorted_paths,
         )
 
         # --- 4. Save results to JSON ---
@@ -393,7 +450,7 @@ async def extract_text_and_store(
         )
 
         logger.info(
-            "Gemini OCR and upload completed",
+            "OCR and upload completed",
             upload_id=upload_id,
             frames_processed=len(ocr_results),
         )
