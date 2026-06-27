@@ -547,9 +547,15 @@ async def consolidate_and_store(
         visual_content = []
         has_handwriting = False
         has_diagrams = False
+        ocr_error_count = 0
 
         for frame_entry in ocr_data:
             content = frame_entry.get("content", {})
+
+            # Track OCR failures — a failed frame yields empty text, which would
+            # otherwise silently degrade the technical score with no visible cause.
+            if content.get("error"):
+                ocr_error_count += 1
 
             # Check for presence of handwriting and diagrams across all frames
             handwritten = content.get("handwritten_text", "").strip()
@@ -586,6 +592,15 @@ async def consolidate_and_store(
                 "has_diagrams": has_diagrams,
             },
         }
+
+        if ocr_error_count:
+            logger.warning(
+                "Some frames failed OCR — visual evidence will be incomplete, "
+                "which lowers technical-score reliability",
+                upload_id=upload_id,
+                failed_frames=ocr_error_count,
+                total_frames=len(visual_content),
+            )
 
         # --- 5. Write and upload consolidated.json ---
         consolidated_path = os.path.join(tmp_dir, "consolidated.json")

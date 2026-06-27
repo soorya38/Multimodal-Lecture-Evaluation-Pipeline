@@ -7,17 +7,28 @@ import ollama
 
 logger = structlog.get_logger(__name__)
 
+# Model used for rubric scoring. Configurable so the deployment can point at
+# whatever tag is actually installed (e.g. "llama3.2:1b" locally). NOTE: the
+# default "llama3.2" resolves to llama3.2:latest (3B) — if that tag is not
+# pulled, Ollama raises "model not found". Run `ollama pull llama3.2` or set
+# OLLAMA_EVAL_MODEL to an installed tag.
+_EVAL_MODEL = os.getenv("OLLAMA_EVAL_MODEL", "llama3.2")
+# Fixed seed so the same input yields the same score across runs. Temperature
+# alone (0.1) still samples, so scores would otherwise drift run-to-run.
+_EVAL_SEED = int(os.getenv("OLLAMA_EVAL_SEED", "42"))
+
 
 def _call_ollama(prompt: str) -> str:
     """
-    Send a prompt to local Ollama (llama3.2) and return the raw response text.
-    Uses low temperature for deterministic, rubric-based scoring and constrained JSON format.
+    Send a prompt to local Ollama and return the raw response text.
+    Uses low temperature + a fixed seed for deterministic, rubric-based scoring
+    and constrained JSON format.
     """
     ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
     client = ollama.Client(host=ollama_host)
 
     response = client.chat(
-        model="llama3.2",
+        model=_EVAL_MODEL,
         messages=[
             {
                 "role": "user",
@@ -27,17 +38,36 @@ def _call_ollama(prompt: str) -> str:
         format="json",
         options={
             "temperature": 0.1,  # Low temperature for consistent scoring
+            "seed": _EVAL_SEED,  # Fixed seed → reproducible scores
         }
     )
 
     text = response['message']['content']
-    
+
     if isinstance(text, dict):
         text = json.dumps(text)
     elif not text:
         text = "{}"
-        
+
     return str(text).strip()
+
+
+def _require_score(result: dict[str, Any], key: str) -> float:
+    """
+    Extract a numeric score from the model's parsed JSON reply.
+
+    Raises ValueError if the key is missing or non-numeric, instead of silently
+    defaulting to 0.0 — a malformed reply is a failure to surface, not a real
+    zero score.
+    """
+    if key not in result:
+        raise ValueError(
+            f"Model reply missing required key '{key}'. Got keys: {list(result.keys())}"
+        )
+    try:
+        return float(result[key])
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"Model reply key '{key}' is not numeric: {result[key]!r}") from e
 
 
 def evaluate_technical(consolidated: dict[str, Any], subject: str) -> float:
@@ -95,7 +125,7 @@ Return ONLY a JSON object with this exact structure:
     try:
         result_text = _call_ollama(prompt)
         result = json.loads(result_text)
-        score = float(result.get("technical_score", 0.0))
+        score = _require_score(result, "technical_score")
         # Clamp to valid range
         score = max(0.0, min(100.0, score))
         logger.info("Technical evaluation completed", score=score)
@@ -149,7 +179,7 @@ Return ONLY a JSON object with this exact structure:
     try:
         result_text = _call_ollama(prompt)
         result = json.loads(result_text)
-        score = float(result.get("grammatical_score", 0.0))
+        score = _require_score(result, "grammatical_score")
         score = max(0.0, min(100.0, score))
         logger.info("Grammar evaluation completed", score=score)
         return score
@@ -201,8 +231,8 @@ Return ONLY a JSON object with this exact structure:
         result_text = _call_ollama(prompt)
         result = json.loads(result_text)
 
-        english_pct = float(result.get("english_percentage", 100.0))
-        tamil_pct = float(result.get("tamil_percentage", 0.0))
+        english_pct = _require_score(result, "english_percentage")
+        tamil_pct = _require_score(result, "tamil_percentage")
 
         # Clamp and normalize so they sum to 100
         english_pct = max(0.0, min(100.0, english_pct))

@@ -81,6 +81,7 @@ def _ocr_single_frame(
             format="json",
             options={
                 "temperature": 0.0,
+                "seed": 42,  # Fixed seed → reproducible OCR output
             },
         )
 
@@ -144,8 +145,10 @@ def extract_text_from_frames(frame_paths: list[str]) -> list[dict[str, Any]]:
     total = len(frame_paths)
     workers = min(_OCR_MAX_WORKERS, total) if total > 0 else 1
 
-    # Use llava-phi3 (3.8B) for OCR
-    model_name = "llava-phi3"
+    # Vision model for OCR. Configurable so it can point at an installed tag.
+    # Default "llava-phi3" (3.8B) must be pulled first (`ollama pull llava-phi3`)
+    # or every frame will fail with "model not found" and visual_content ends up empty.
+    model_name = os.getenv("OLLAMA_OCR_MODEL", "llava-phi3")
 
     logger.info(
         "Starting parallel multimodal extraction from frames via local Ollama",
