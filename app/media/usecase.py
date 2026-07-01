@@ -13,6 +13,7 @@ from fastapi import UploadFile
 
 from app.core.config import get_settings
 from app.core.storage import download_file, list_objects, upload_file
+from app.media.dedupe import deduplicate_frames
 from app.media.ffmpeg import split_video_audio
 from app.media.scene_detect import detect_scenes_and_extract_frames
 from app.media.schemas import (
@@ -214,6 +215,24 @@ async def extract_frames_and_store(
             frame_skip=frame_skip,
         )
 
+        # --- 2b. Drop near-duplicate slides before uploading/OCR ---
+        settings = get_settings()
+        if settings.frame_dedup_enabled and len(frame_paths) > 1:
+            detected = len(frame_paths)
+            frame_paths = await asyncio.to_thread(
+                deduplicate_frames,
+                frame_paths,
+                settings.frame_dedup_hamming_threshold,
+            )
+            logger.info(
+                "Frame de-duplication completed",
+                upload_id=upload_id,
+                detected=detected,
+                kept=len(frame_paths),
+                removed=detected - len(frame_paths),
+                hamming_threshold=settings.frame_dedup_hamming_threshold,
+            )
+
         # --- 3. Upload each frame to MinIO (parallel) ---
         total_frames = len(frame_paths)
         logger.info(
@@ -294,6 +313,7 @@ async def transcribe_and_store(
     upload_id: int,
     model_size: str = "base",
     language: str | None = None,
+    initial_prompt: str | None = None,
 ) -> TranscribeResponse:
     """
     Orchestrate audio transcription from a previously split audio file:
@@ -307,6 +327,8 @@ async def transcribe_and_store(
         upload_id: The upload ID from a prior /split response.
         model_size: Size of the Whisper model to use.
         language: ISO language code (e.g. 'en') to force, or None for auto-detect.
+        initial_prompt: Optional domain-biasing context (e.g. the lecture subject)
+            passed to Whisper to improve technical-term accuracy.
 
     Returns:
         TranscribeResponse with metadata for the transcript.
@@ -323,6 +345,7 @@ async def transcribe_and_store(
         upload_id=upload_id,
         model_size=model_size,
         language=language,
+        biased=bool(initial_prompt),
     )
 
     try:
@@ -341,6 +364,7 @@ async def transcribe_and_store(
             audio_path=local_audio_path,
             model_size=model_size,
             language=language,
+            initial_prompt=initial_prompt,
         )
 
         # --- 3. Upload transcript JSON to MinIO ---

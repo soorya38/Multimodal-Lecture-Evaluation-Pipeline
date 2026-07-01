@@ -36,6 +36,7 @@ async def run_full_pipeline(
     person_name: str,
     subject: str,
     timing: str,
+    reference_material: str | None = None,
 ) -> EvaluateResponse:
     """
     Orchestrates the entire end-to-end evaluation pipeline for an uploaded file.
@@ -48,7 +49,9 @@ async def run_full_pipeline(
     """
     logger.info("Starting full end-to-end pipeline", filename=file.filename, person=person_name, subject=subject)
     split_result = await split_and_store(file)
-    return await _run_pipeline_after_split(split_result.upload_id, subject)
+    return await _run_pipeline_after_split(
+        split_result.upload_id, subject, reference_material=reference_material
+    )
 
 
 async def process_evaluation_job(
@@ -57,6 +60,7 @@ async def process_evaluation_job(
     person_name: str,
     subject: str,
     timing: str,
+    reference_material: str | None = None,
 ) -> None:
     """
     Run the full pipeline for a previously-persisted upload as a background job,
@@ -75,7 +79,9 @@ async def process_evaluation_job(
         split_result = await split_stored_file(input_path)
         upload_id = split_result.upload_id
 
-        result = await _run_pipeline_after_split(upload_id, subject, on_stage=on_stage)
+        result = await _run_pipeline_after_split(
+            upload_id, subject, reference_material=reference_material, on_stage=on_stage
+        )
 
         await asyncio.to_thread(jobs.mark_completed, job_id, result)
     except Exception as e:  # noqa: BLE001 — any failure must be recorded on the job
@@ -91,6 +97,7 @@ async def process_evaluation_job(
 async def _run_pipeline_after_split(
     upload_id: int,
     subject: str,
+    reference_material: str | None = None,
     on_stage: StageHook = None,
 ) -> EvaluateResponse:
     """
@@ -108,9 +115,14 @@ async def _run_pipeline_after_split(
     await stage("frames_and_transcription")
     step_start = time.monotonic()
     logger.info("Pipeline Step 2: Frame Extraction & Transcription (parallel)", upload_id=upload_id)
+    settings = get_settings()
+    # Bias transcription toward the lecture's domain vocabulary using the subject.
+    transcription_prompt = (
+        f"This is a lecture about {subject}." if settings.whisper_bias_with_subject and subject else None
+    )
     await asyncio.gather(
         extract_frames_and_store(upload_id=upload_id),
-        transcribe_and_store(upload_id=upload_id),
+        transcribe_and_store(upload_id=upload_id, initial_prompt=transcription_prompt),
     )
     logger.info("Pipeline Step 2 completed", upload_id=upload_id, wall_time=f"{time.monotonic() - step_start:.1f}s")
 
@@ -139,7 +151,7 @@ async def _run_pipeline_after_split(
     step_start = time.monotonic()
     logger.info("Pipeline Step 6: Running LLM evaluations (parallel)", upload_id=upload_id)
     technical_score, grammatical_score, language_mix = await asyncio.gather(
-        asyncio.to_thread(evaluate_technical, consolidated_data, subject),
+        asyncio.to_thread(evaluate_technical, consolidated_data, subject, reference_material),
         asyncio.to_thread(evaluate_grammar, consolidated_data),
         asyncio.to_thread(evaluate_language_mix, consolidated_data),
     )

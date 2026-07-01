@@ -84,6 +84,7 @@ def transcribe_audio(
     audio_path: str,
     model_size: str | None = None,
     language: str | None = None,
+    initial_prompt: str | None = None,
 ) -> dict:
     """
     Transcribe audio using faster-whisper.
@@ -92,6 +93,9 @@ def transcribe_audio(
         audio_path: Absolute path to the input audio file.
         model_size: Size of the Whisper model to use. Defaults to WHISPER_MODEL_SIZE env var.
         language: ISO code of the language to force (e.g. "en"). If None, auto-detects.
+        initial_prompt: Optional text prepended as context to bias decoding toward
+            the lecture's domain vocabulary (e.g. the subject), improving accuracy
+            on technical terms and proper nouns.
 
     Returns:
         A dictionary containing:
@@ -129,6 +133,7 @@ def transcribe_audio(
         language=language,
         audio_duration_seconds=round(audio_duration, 1),
         beam_size=beam_size,
+        biased=bool(initial_prompt),
     )
 
     try:
@@ -139,6 +144,7 @@ def transcribe_audio(
             audio_path,
             language=language,
             beam_size=beam_size,
+            initial_prompt=initial_prompt,  # bias decoding toward domain vocabulary
             vad_filter=True,  # Filters out parts without speech using VAD
             vad_parameters=dict(min_silence_duration_ms=500),
         )
