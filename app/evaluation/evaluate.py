@@ -1,55 +1,34 @@
-import json
-import os
 from typing import Any
 
 import structlog
-import ollama
+
+from app.core.config import get_settings
+from app.core.llm import get_llm_client
 
 logger = structlog.get_logger(__name__)
 
-# Model used for rubric scoring. Configurable so the deployment can point at
-# whatever tag is actually installed (e.g. "llama3.2:1b" locally). NOTE: the
-# default "llama3.2" resolves to llama3.2:latest (3B) — if that tag is not
-# pulled, Ollama raises "model not found". Run `ollama pull llama3.2` or set
-# OLLAMA_EVAL_MODEL to an installed tag.
-_EVAL_MODEL = os.getenv("OLLAMA_EVAL_MODEL", "llama3.2")
-# Fixed seed so the same input yields the same score across runs. Temperature
-# alone (0.1) still samples, so scores would otherwise drift run-to-run.
-_EVAL_SEED = int(os.getenv("OLLAMA_EVAL_SEED", "42"))
 
-
-def _call_ollama(prompt: str) -> str:
+def _call_llm(prompt: str) -> dict[str, Any]:
     """
-    Send a prompt to local Ollama and return the raw response text.
-    Uses low temperature + a fixed seed for deterministic, rubric-based scoring
-    and constrained JSON format.
-    """
-    ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-    client = ollama.Client(host=ollama_host)
+    Send a prompt to the configured LLM provider and return the parsed JSON reply.
 
-    response = client.chat(
-        model=_EVAL_MODEL,
-        messages=[
-            {
-                "role": "user",
-                "content": prompt,
-            }
-        ],
-        format="json",
-        options={
-            "temperature": 0.1,  # Low temperature for consistent scoring
-            "seed": _EVAL_SEED,  # Fixed seed → reproducible scores
-        }
+    Uses low temperature + a fixed seed for deterministic, rubric-based scoring.
+    The provider (Ollama or any OpenAI-compatible endpoint) and model are chosen
+    via configuration — see ``app.core.config.Settings``.
+
+    NOTE: the default eval model ``llama3.2`` resolves to ``llama3.2:latest`` (3B)
+    on Ollama — if that tag is not pulled, the call fails with "model not found".
+    Run ``ollama pull llama3.2`` or set ``LLM_EVAL_MODEL`` to an installed tag.
+    """
+    settings = get_settings()
+    client = get_llm_client(settings)
+
+    return client.chat_json(
+        prompt,
+        model=settings.eval_model,
+        temperature=settings.eval_temperature,  # low temperature for consistent scoring
+        seed=settings.eval_seed,  # fixed seed → reproducible scores
     )
-
-    text = response['message']['content']
-
-    if isinstance(text, dict):
-        text = json.dumps(text)
-    elif not text:
-        text = "{}"
-
-    return str(text).strip()
 
 
 def _require_score(result: dict[str, Any], key: str) -> float:
@@ -120,11 +99,10 @@ Return ONLY a JSON object with this exact structure:
 {{"technical_score": <number between 0 and 100>}}
 """
 
-    logger.info("Running technical evaluation via local Ollama", subject=subject)
+    logger.info("Running technical evaluation via configured LLM", subject=subject)
 
     try:
-        result_text = _call_ollama(prompt)
-        result = json.loads(result_text)
+        result = _call_llm(prompt)
         score = _require_score(result, "technical_score")
         # Clamp to valid range
         score = max(0.0, min(100.0, score))
@@ -174,11 +152,10 @@ Return ONLY a JSON object with this exact structure:
 {{"grammatical_score": <number between 0 and 100>}}
 """
 
-    logger.info("Running grammar evaluation via local Ollama")
+    logger.info("Running grammar evaluation via configured LLM")
 
     try:
-        result_text = _call_ollama(prompt)
-        result = json.loads(result_text)
+        result = _call_llm(prompt)
         score = _require_score(result, "grammatical_score")
         score = max(0.0, min(100.0, score))
         logger.info("Grammar evaluation completed", score=score)
@@ -225,11 +202,10 @@ Return ONLY a JSON object with this exact structure:
 {{"english_percentage": <number between 0 and 100>, "tamil_percentage": <number between 0 and 100>}}
 """
 
-    logger.info("Running language mix evaluation via local Ollama")
+    logger.info("Running language mix evaluation via configured LLM")
 
     try:
-        result_text = _call_ollama(prompt)
-        result = json.loads(result_text)
+        result = _call_llm(prompt)
 
         english_pct = _require_score(result, "english_percentage")
         tamil_pct = _require_score(result, "tamil_percentage")

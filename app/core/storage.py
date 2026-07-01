@@ -148,6 +148,65 @@ def download_file(
         raise
 
 
+def put_bytes(
+    bucket: str,
+    object_name: str,
+    data: bytes,
+    content_type: str = "application/octet-stream",
+) -> None:
+    """
+    Upload an in-memory byte payload to MinIO (no temp file needed).
+
+    Handy for small JSON documents such as job-status records.
+    """
+    import io
+
+    client = get_minio_client()
+    try:
+        client.put_object(
+            bucket,
+            object_name,
+            io.BytesIO(data),
+            length=len(data),
+            content_type=content_type,
+        )
+    except S3Error as e:
+        logger.error("Failed to put bytes to MinIO", bucket=bucket, object_name=object_name, error=str(e))
+        raise
+
+
+def get_bytes(bucket: str, object_name: str) -> bytes:
+    """
+    Download an object from MinIO into memory and return its raw bytes.
+
+    Raises S3Error (code "NoSuchKey") if the object does not exist.
+    """
+    client = get_minio_client()
+    response = None
+    try:
+        response = client.get_object(bucket, object_name)
+        return response.read()
+    except S3Error as e:
+        logger.error("Failed to get bytes from MinIO", bucket=bucket, object_name=object_name, error=str(e))
+        raise
+    finally:
+        if response is not None:
+            response.close()
+            response.release_conn()
+
+
+def object_exists(bucket: str, object_name: str) -> bool:
+    """Return True if the given object exists in the bucket."""
+    client = get_minio_client()
+    try:
+        client.stat_object(bucket, object_name)
+        return True
+    except S3Error as e:
+        if e.code in ("NoSuchKey", "NoSuchObject"):
+            return False
+        raise
+
+
 def list_objects(bucket: str, prefix: str) -> list[str]:
     """
     List all object keys in a MinIO bucket that match a specific prefix.

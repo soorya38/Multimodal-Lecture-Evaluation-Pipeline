@@ -5,19 +5,17 @@ import time
 import structlog
 from faster_whisper import WhisperModel
 
+from app.core.config import get_settings
+
 logger = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
-# Configuration via environment variables (GPU-first defaults)
+# Whisper configuration is sourced from app.core.config.Settings:
+#   WHISPER_DEVICE        "cuda" (GPU) | "cpu" | "auto" (let CTranslate2 decide)
+#   WHISPER_COMPUTE_TYPE  "float16" (GPU, fastest) | "int8" (CPU) | "default"
+#   WHISPER_MODEL_SIZE    e.g. "large-v3" (best quality on GPU) | "base" | "small"
+#   WHISPER_CPU_THREADS   0 = use all cores (CPU fallback / pre-post processing)
 # ---------------------------------------------------------------------------
-# Device: "cuda" for NVIDIA GPU, "cpu" for CPU-only, "auto" to let CTranslate2 decide
-_WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cuda")
-# Compute type: "float16" for GPU (fastest), "int8" for CPU, "default" to auto-select
-_WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "float16")
-# Model size: with GPU, large-v3 is feasible and gives the best quality
-_WHISPER_MODEL_SIZE = os.getenv("WHISPER_MODEL_SIZE", "large-v3")
-# CPU threads: use all available cores (relevant for CPU fallback or pre/post-processing)
-_CPU_THREADS = int(os.getenv("WHISPER_CPU_THREADS", str(os.cpu_count() or 4)))
 
 # Global cache for the WhisperModel instance to avoid reloading it for every request.
 # In production, you might manage this differently (e.g. per-worker model pool or external service).
@@ -38,9 +36,11 @@ def get_whisper_model(
     """
     global _model_instance, _current_model_size
 
-    model_size = model_size or _WHISPER_MODEL_SIZE
-    device = device or _WHISPER_DEVICE
-    compute_type = compute_type or _WHISPER_COMPUTE_TYPE
+    settings = get_settings()
+    model_size = model_size or settings.whisper_model_size
+    device = device or settings.whisper_device
+    compute_type = compute_type or settings.whisper_compute_type
+    cpu_threads = settings.resolved_cpu_threads()
 
     if _model_instance is None or _current_model_size != model_size:
         logger.info(
@@ -48,13 +48,13 @@ def get_whisper_model(
             model_size=model_size,
             device=device,
             compute_type=compute_type,
-            cpu_threads=_CPU_THREADS,
+            cpu_threads=cpu_threads,
         )
         _model_instance = WhisperModel(
             model_size,
             device=device,
             compute_type=compute_type,
-            cpu_threads=_CPU_THREADS,
+            cpu_threads=cpu_threads,
         )
         _current_model_size = model_size
         logger.info(
@@ -104,7 +104,8 @@ def transcribe_audio(
         FileNotFoundError: If the input audio file does not exist.
         RuntimeError: If transcription fails.
     """
-    model_size = model_size or _WHISPER_MODEL_SIZE
+    settings = get_settings()
+    model_size = model_size or settings.whisper_model_size
 
     if not os.path.isfile(audio_path):
         raise FileNotFoundError(f"Audio file not found: {audio_path}")
@@ -116,15 +117,15 @@ def transcribe_audio(
     # On GPU, beam_size=5 is fast enough even for long audio.
     # On CPU, use beam_size=1 (greedy) for long audio — it's 3-5x faster
     # with minimal quality loss for lecture content.
-    is_gpu = _WHISPER_DEVICE.lower() in ("cuda", "auto")
+    is_gpu = settings.whisper_device.lower() in ("cuda", "auto")
     beam_size = 5 if is_gpu else (1 if is_long_audio else 5)
 
     logger.info(
         "Starting audio transcription",
         audio_path=audio_path,
         model_size=model_size,
-        device=_WHISPER_DEVICE,
-        compute_type=_WHISPER_COMPUTE_TYPE,
+        device=settings.whisper_device,
+        compute_type=settings.whisper_compute_type,
         language=language,
         audio_duration_seconds=round(audio_duration, 1),
         beam_size=beam_size,

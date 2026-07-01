@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 import structlog
 from fastapi import UploadFile
 
+from app.core.config import get_settings
 from app.core.storage import download_file, list_objects, upload_file
 from app.media.ffmpeg import split_video_audio
 from app.media.scene_detect import detect_scenes_and_extract_frames
@@ -36,12 +37,14 @@ CONTENT_TYPE_AUDIO = "audio/mpeg"
 CONTENT_TYPE_IMAGE = "image/jpeg"
 EXTRACTED_FRAMES_DIR = "frames"
 
-# Default bucket — sourced from the same env var used by storage init
-_DEFAULT_BUCKET = os.getenv("MINIO_DEFAULT_BUCKET", "lectures")
-
 # Dynamic I/O thread pool size for parallel MinIO uploads/downloads.
 # Scales with available CPUs, capped at 16 to avoid overwhelming the network.
 _IO_MAX_WORKERS = min(os.cpu_count() or 4, 16)
+
+
+def _default_bucket() -> str:
+    """Resolve the configured MinIO bucket at call time (not import time)."""
+    return get_settings().minio_default_bucket
 
 
 async def split_and_store(file: UploadFile) -> SplitMediaResponse:
@@ -79,47 +82,74 @@ async def split_and_store(file: UploadFile) -> SplitMediaResponse:
 
         logger.info("Saved uploaded file to disk", path=input_path)
 
-        # --- 2. Run FFmpeg ---
-        video_out = os.path.join(tmp_dir, EXTRACTED_VIDEO_FILE_NAME)
-        audio_out = os.path.join(tmp_dir, EXTRACTED_AUDIO_FILE_NAME)
-
-        await split_video_audio(input_path, video_out, audio_out)
-
-        # --- 3. Upload results to MinIO ---
-        video_key = f"{upload_id}/{EXTRACTED_VIDEO_FILE_NAME}"
-        audio_key = f"{upload_id}/{EXTRACTED_AUDIO_FILE_NAME}"
-
-        upload_file(
-            bucket=_DEFAULT_BUCKET,
-            object_name=video_key,
-            file_path=video_out,
-            content_type=CONTENT_TYPE_VIDEO,
-        )
-        upload_file(
-            bucket=_DEFAULT_BUCKET,
-            object_name=audio_key,
-            file_path=audio_out,
-            content_type=CONTENT_TYPE_AUDIO,
-        )
-
-        logger.info(
-            "Split and store completed",
-            upload_id=upload_id,
-            video_key=video_key,
-            audio_key=audio_key,
-        )
-
-        return SplitMediaResponse(
-            upload_id=upload_id,
-            video_object_key=video_key,
-            audio_object_key=audio_key,
-            bucket=_DEFAULT_BUCKET,
-        )
+        # --- 2-3. Split with FFmpeg and upload both streams ---
+        return await _split_saved_input(upload_id, input_path)
 
     finally:
         # --- 4. Clean up temp files regardless of success or failure ---
         shutil.rmtree(tmp_dir, ignore_errors=True)
         logger.info("Cleaned up temporary directory", tmp_dir=tmp_dir)
+
+
+async def split_stored_file(input_path: str) -> SplitMediaResponse:
+    """
+    Split a media file that is already present on local disk.
+
+    Identical to :func:`split_and_store` but skips the upload-streaming step —
+    used by the asynchronous evaluation job, where the request handler has
+    already persisted the upload to disk before returning ``202 Accepted``.
+    """
+    upload_id = uuid.uuid4().int
+    tmp_dir = tempfile.mkdtemp(prefix=f"media_split_{upload_id}_")
+    logger.info("Starting split_stored_file", upload_id=upload_id, input_path=input_path, tmp_dir=tmp_dir)
+    try:
+        return await _split_saved_input(upload_id, input_path, work_dir=tmp_dir)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        logger.info("Cleaned up temporary directory", tmp_dir=tmp_dir)
+
+
+async def _split_saved_input(
+    upload_id: int,
+    input_path: str,
+    work_dir: str | None = None,
+) -> SplitMediaResponse:
+    """
+    Run FFmpeg on an on-disk input and upload the video/audio streams to MinIO.
+
+    ``work_dir`` is where the intermediate outputs are written; it defaults to the
+    directory containing ``input_path``. The caller owns cleanup of both.
+    """
+    work_dir = work_dir or os.path.dirname(input_path)
+    video_out = os.path.join(work_dir, EXTRACTED_VIDEO_FILE_NAME)
+    audio_out = os.path.join(work_dir, EXTRACTED_AUDIO_FILE_NAME)
+
+    await split_video_audio(input_path, video_out, audio_out)
+
+    video_key = f"{upload_id}/{EXTRACTED_VIDEO_FILE_NAME}"
+    audio_key = f"{upload_id}/{EXTRACTED_AUDIO_FILE_NAME}"
+
+    upload_file(
+        bucket=_default_bucket(),
+        object_name=video_key,
+        file_path=video_out,
+        content_type=CONTENT_TYPE_VIDEO,
+    )
+    upload_file(
+        bucket=_default_bucket(),
+        object_name=audio_key,
+        file_path=audio_out,
+        content_type=CONTENT_TYPE_AUDIO,
+    )
+
+    logger.info("Split and store completed", upload_id=upload_id, video_key=video_key, audio_key=audio_key)
+
+    return SplitMediaResponse(
+        upload_id=upload_id,
+        video_object_key=video_key,
+        audio_object_key=audio_key,
+        bucket=_default_bucket(),
+    )
 
 
 async def extract_frames_and_store(
@@ -164,7 +194,7 @@ async def extract_frames_and_store(
         # --- 1. Download video from MinIO ---
         local_video_path = os.path.join(tmp_dir, EXTRACTED_VIDEO_FILE_NAME)
         download_file(
-            bucket=_DEFAULT_BUCKET,
+            bucket=_default_bucket(),
             object_name=video_object_key,
             file_path=local_video_path,
         )
@@ -200,7 +230,7 @@ async def extract_frames_and_store(
             object_key = f"{upload_id}/{EXTRACTED_FRAMES_DIR}/{filename}"
 
             upload_file(
-                bucket=_DEFAULT_BUCKET,
+                bucket=_default_bucket(),
                 object_name=object_key,
                 file_path=frame_path,
                 content_type=CONTENT_TYPE_IMAGE,
@@ -234,7 +264,7 @@ async def extract_frames_and_store(
 
         return ExtractFramesResponse(
             upload_id=upload_id,
-            bucket=_DEFAULT_BUCKET,
+            bucket=_default_bucket(),
             frame_count=total_frames,
             frames=frames,
         )
@@ -299,7 +329,7 @@ async def transcribe_and_store(
         # --- 1. Download audio from MinIO ---
         local_audio_path = os.path.join(tmp_dir, EXTRACTED_AUDIO_FILE_NAME)
         download_file(
-            bucket=_DEFAULT_BUCKET,
+            bucket=_default_bucket(),
             object_name=audio_object_key,
             file_path=local_audio_path,
         )
@@ -321,7 +351,7 @@ async def transcribe_and_store(
         transcript_object_key = f"{upload_id}/transcript.json"
 
         upload_file(
-            bucket=_DEFAULT_BUCKET,
+            bucket=_default_bucket(),
             object_name=transcript_object_key,
             file_path=transcript_path,
             content_type="application/json",
@@ -335,7 +365,7 @@ async def transcribe_and_store(
 
         return TranscribeResponse(
             upload_id=upload_id,
-            bucket=_DEFAULT_BUCKET,
+            bucket=_default_bucket(),
             transcript_object_key=transcript_object_key,
             language_detected=transcript_result["language"],
             duration=transcript_result["duration"],
@@ -355,7 +385,7 @@ async def extract_text_and_store(
 
     1. Discover all frame keys for this upload_id in MinIO.
     2. Download them to a temporary directory.
-    3. Run Gemini OCR (in a separate thread) across all frames.
+    3. Run vision-LLM OCR (in a separate thread) across all frames.
     4. Save the combined OCR results to a JSON file.
     5. Upload the JSON to MinIO.
     6. Clean up temporary files.
@@ -371,12 +401,12 @@ async def extract_text_and_store(
     """
     tmp_dir = tempfile.mkdtemp(prefix=f"ocr_{upload_id}_")
 
-    logger.info("Starting extract_text_and_store via Gemini", upload_id=upload_id)
+    logger.info("Starting extract_text_and_store via vision LLM", upload_id=upload_id)
 
     try:
         # --- 1. Find all frames in MinIO ---
         prefix = f"{upload_id}/frames/"
-        frame_keys = list_objects(bucket=_DEFAULT_BUCKET, prefix=prefix)
+        frame_keys = list_objects(bucket=_default_bucket(), prefix=prefix)
 
         if not frame_keys:
             raise FileNotFoundError(f"No frames found in MinIO for upload_id '{upload_id}'. Ensure /extract-frames was called first.")
@@ -396,7 +426,7 @@ async def extract_text_and_store(
             filename = os.path.basename(key)
             local_path = os.path.join(tmp_dir, filename)
             download_file(
-                bucket=_DEFAULT_BUCKET,
+                bucket=_default_bucket(),
                 object_name=key,
                 file_path=local_path,
             )
@@ -443,7 +473,7 @@ async def extract_text_and_store(
         # --- 5. Upload JSON to MinIO ---
         ocr_object_key = f"{upload_id}/ocr.json"
         upload_file(
-            bucket=_DEFAULT_BUCKET,
+            bucket=_default_bucket(),
             object_name=ocr_object_key,
             file_path=ocr_path,
             content_type="application/json",
@@ -457,7 +487,7 @@ async def extract_text_and_store(
 
         return OcrResponse(
             upload_id=upload_id,
-            bucket=_DEFAULT_BUCKET,
+            bucket=_default_bucket(),
             ocr_object_key=ocr_object_key,
             frames_processed=len(ocr_results),
         )
@@ -505,7 +535,7 @@ async def consolidate_and_store(
 
         try:
             download_file(
-                bucket=_DEFAULT_BUCKET,
+                bucket=_default_bucket(),
                 object_name=transcript_object_key,
                 file_path=local_transcript_path,
             )
@@ -521,7 +551,7 @@ async def consolidate_and_store(
 
         try:
             download_file(
-                bucket=_DEFAULT_BUCKET,
+                bucket=_default_bucket(),
                 object_name=ocr_object_key,
                 file_path=local_ocr_path,
             )
@@ -609,7 +639,7 @@ async def consolidate_and_store(
 
         consolidated_object_key = f"{upload_id}/consolidated.json"
         upload_file(
-            bucket=_DEFAULT_BUCKET,
+            bucket=_default_bucket(),
             object_name=consolidated_object_key,
             file_path=consolidated_path,
             content_type="application/json",
@@ -625,7 +655,7 @@ async def consolidate_and_store(
 
         return ConsolidateResponse(
             upload_id=upload_id,
-            bucket=_DEFAULT_BUCKET,
+            bucket=_default_bucket(),
             consolidated_object_key=consolidated_object_key,
             transcript_segments=len(segments),
             frames_processed=len(visual_content),
