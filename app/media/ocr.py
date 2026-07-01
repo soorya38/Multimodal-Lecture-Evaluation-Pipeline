@@ -1,18 +1,13 @@
-import json
 import os
 import time
 import structlog
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
-import ollama
+
+from app.core.config import get_settings
+from app.core.llm import get_llm_client
 
 logger = structlog.get_logger(__name__)
-
-# Configurable concurrency for parallel OCR. Each worker sends an independent
-# HTTP request to the Ollama server, so this is safe to parallelise.
-# Default scales with available CPUs (capped at 8) since GPU-backed Ollama
-# can handle higher concurrency than CPU-only setups.
-_OCR_MAX_WORKERS = int(os.getenv("OCR_MAX_WORKERS", str(min(os.cpu_count() or 4, 8))))
 
 # System prompt tuned to extract ALL text (typed, handwritten, and diagram descriptions)
 OCR_SYSTEM_PROMPT = """
@@ -36,13 +31,14 @@ def _ocr_single_frame(
     path: str,
     index: int,
     total: int,
-    ollama_host: str,
     model_name: str,
+    temperature: float,
+    seed: int,
 ) -> dict[str, Any]:
     """
     Run OCR on a single frame image. Designed to be called from a thread pool.
 
-    Each invocation creates its own Ollama client to avoid sharing state across threads.
+    Each invocation builds its own LLM client to avoid sharing state across threads.
     """
     frame_start = time.monotonic()
 
@@ -67,30 +63,15 @@ def _ocr_single_frame(
         )
 
         # Each thread gets its own client to avoid shared-state issues
-        client = ollama.Client(host=ollama_host)
+        client = get_llm_client()
 
-        response = client.chat(
+        parsed_json = client.chat_json(
+            OCR_SYSTEM_PROMPT,
             model=model_name,
-            messages=[
-                {
-                    "role": "user",
-                    "content": OCR_SYSTEM_PROMPT,
-                    "images": [path],
-                }
-            ],
-            format="json",
-            options={
-                "temperature": 0.0,
-                "seed": 42,  # Fixed seed → reproducible OCR output
-            },
+            images=[path],
+            temperature=temperature,
+            seed=seed,  # fixed seed → reproducible OCR output
         )
-
-        content = response["message"]["content"]
-        if isinstance(content, dict):
-            parsed_json = content
-        else:
-            response_text = str(content or "{}").strip()
-            parsed_json = json.loads(response_text)
 
         elapsed = time.monotonic() - frame_start
         logger.info(
@@ -128,11 +109,12 @@ def _ocr_single_frame(
 
 def extract_text_from_frames(frame_paths: list[str]) -> list[dict[str, Any]]:
     """
-    Extract text and diagram descriptions from a list of frame images using local Ollama model.
+    Extract text and diagram descriptions from a list of frame images using the
+    configured vision LLM (Ollama or any OpenAI-compatible endpoint).
 
     Uses a ThreadPoolExecutor to process multiple frames concurrently, since each
-    Ollama call is network I/O-bound. The concurrency level is controlled by the
-    OCR_MAX_WORKERS environment variable (default: 4).
+    call is network I/O-bound. The concurrency level is controlled by the
+    OCR_MAX_WORKERS setting (0 = scale with CPUs, capped at 8).
 
     Args:
         frame_paths: List of absolute paths to the frame JPEG images.
@@ -141,20 +123,21 @@ def extract_text_from_frames(frame_paths: list[str]) -> list[dict[str, Any]]:
         A list of dictionaries containing the extracted rich text for each frame,
         ordered to match the input frame_paths order.
     """
-    ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+    settings = get_settings()
     total = len(frame_paths)
-    workers = min(_OCR_MAX_WORKERS, total) if total > 0 else 1
+    workers = min(settings.resolved_ocr_workers(), total) if total > 0 else 1
 
-    # Vision model for OCR. Configurable so it can point at an installed tag.
-    # Default "llava-phi3" (3.8B) must be pulled first (`ollama pull llava-phi3`)
+    # Vision model for OCR. Configurable via LLM_OCR_MODEL (or legacy OLLAMA_OCR_MODEL).
+    # The default "llava-phi3" (3.8B) must be pulled first (`ollama pull llava-phi3`)
     # or every frame will fail with "model not found" and visual_content ends up empty.
-    model_name = os.getenv("OLLAMA_OCR_MODEL", "llava-phi3")
+    model_name = settings.ocr_model
 
     logger.info(
-        "Starting parallel multimodal extraction from frames via local Ollama",
+        "Starting parallel multimodal extraction from frames via configured LLM",
         frame_count=total,
         max_workers=workers,
         model=model_name,
+        provider=settings.llm_provider,
     )
 
     overall_start = time.monotonic()
@@ -170,8 +153,9 @@ def extract_text_from_frames(frame_paths: list[str]) -> list[dict[str, Any]]:
                 path=path,
                 index=i + 1,
                 total=total,
-                ollama_host=ollama_host,
                 model_name=model_name,
+                temperature=settings.ocr_temperature,
+                seed=settings.eval_seed,
             ): i
             for i, path in enumerate(frame_paths)
         }

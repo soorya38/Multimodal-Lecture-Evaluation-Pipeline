@@ -217,10 +217,11 @@ async def transcribe(request: TranscribeRequest) -> TranscribeResponse:
     "/ocr",
     response_model=OcrResponse,
     status_code=status.HTTP_200_OK,
-    summary="Extract rich text and diagrams from video frames using Gemini",
+    summary="Extract rich text and diagrams from video frames using a vision LLM",
     description=(
         "Downloads all frames associated with the upload_id, "
-        "uploads them to the Gemini API to extract typed text, handwriting, and diagram descriptions, "
+        "sends them to the configured vision LLM (Ollama or an OpenAI-compatible endpoint) "
+        "to extract typed text, handwriting, and diagram descriptions, "
         "and stores the resulting consolidated JSON in MinIO."
     ),
 )
@@ -249,7 +250,7 @@ async def ocr_frames(request: OcrRequest) -> OcrResponse:
             detail=str(e),
         )
     except RuntimeError as e:
-        logger.error("Gemini OCR extraction failed", error=str(e))
+        logger.error("Vision-LLM OCR extraction failed", error=str(e))
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"OCR extraction failed: {e}",

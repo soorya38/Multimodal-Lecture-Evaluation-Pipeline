@@ -8,6 +8,7 @@ import time
 import structlog
 from fastapi import UploadFile
 
+from app.core.config import get_settings
 from app.core.storage import download_file
 from app.evaluation.evaluate import evaluate_grammar, evaluate_language_mix, evaluate_technical
 from app.evaluation.schemas import EvaluateResponse
@@ -20,9 +21,6 @@ from app.media.usecase import (
 )
 
 logger = structlog.get_logger(__name__)
-
-# Default bucket — sourced from the same env var used by storage init
-_DEFAULT_BUCKET = os.getenv("MINIO_DEFAULT_BUCKET", "lectures")
 
 
 async def run_full_pipeline(
@@ -104,7 +102,7 @@ def _download_consolidated(upload_id: int, object_key: str) -> dict:
     try:
         local_path = os.path.join(tmp_dir, "consolidated.json")
         download_file(
-            bucket=_DEFAULT_BUCKET,
+            bucket=get_settings().minio_default_bucket,
             object_name=object_key,
             file_path=local_path,
         )

@@ -1,6 +1,8 @@
 # Multimodal-Lecture-Evaluation-Pipeline
 Multimodal Lecture Evaluation Pipeline is a multimodal lecture assessment engine that evaluates educational videos using speech recognition, OCR, visual understanding, and LLM-based reasoning. It extracts spoken content, on-screen text, handwritten notes, and diagrams, consolidates them into a unified knowledge representation, and generates objective scores for technical accuracy, grammar quality, and language usage.
 
+The LLM used for OCR and evaluation is pluggable: it runs against a local **Ollama** server by default, or any **OpenAI-compatible** endpoint (OpenAI, vLLM, Together, LM Studio, …) — selected via the `LLM_PROVIDER` setting. See [Configuration](#configuration).
+
 Designed for academic institutions, training platforms, and quality assurance workflows, the system produces explainable, rubric-driven evaluations from raw lecture recordings with minimal human intervention.
 
 Core capabilities
@@ -10,7 +12,7 @@ Typed text and handwriting extraction
 Diagram and visual content understanding
 English/Tamil/Tanglish language analysis
 Grammar and communication quality scoring
-Technical correctness evaluation using RAG and LLMs
+Technical correctness evaluation using LLMs
 Weighted rubric-based scoring and report generation
 
 Input: Lecture video
@@ -23,7 +25,7 @@ sequenceDiagram
     participant Usecase as Evaluation Usecase<br/>(usecase.py)
     participant Media as Media Subsystem<br/>(media/usecase.py)
     participant Storage as MinIO Storage
-    participant LLM as Gemini Evaluators<br/>(evaluate.py)
+    participant LLM as LLM Evaluators<br/>(evaluate.py)
 
     Client->>Handler: POST /api/v1/evaluate<br/>(video file, person_name, subject, timing)
     activate Handler
@@ -90,3 +92,42 @@ sequenceDiagram
     Handler-->>Client: HTTP 200 OK<br/>(EvaluateResponse)
     deactivate Handler
 ```
+## Configuration
+
+All configuration is centralised in `app/core/config.py` (`Settings`) and read
+from environment variables / a `.env` file. Copy `.env.example` to `.env` and
+adjust. Key settings:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `LOG_LEVEL` | `INFO` | Log verbosity (logs are structured JSON via structlog). |
+| `MINIO_ENDPOINT` / `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` | `localhost:9000` / `minioadmin` / `minioadmin` | Object storage connection. |
+| `MINIO_DEFAULT_BUCKET` | `lectures` | Bucket for all pipeline artifacts. |
+| `WHISPER_DEVICE` / `WHISPER_COMPUTE_TYPE` / `WHISPER_MODEL_SIZE` | `cuda` / `float16` / `large-v3` | faster-whisper transcription backend. |
+| `LLM_PROVIDER` | `ollama` | LLM backend: `ollama` or `openai` (any OpenAI-compatible endpoint). |
+| `OLLAMA_HOST` | `http://localhost:11434` | Ollama server (when `LLM_PROVIDER=ollama`). |
+| `OPENAI_BASE_URL` / `OPENAI_API_KEY` | `https://api.openai.com/v1` / — | OpenAI-compatible endpoint (when `LLM_PROVIDER=openai`). |
+| `LLM_EVAL_MODEL` / `LLM_OCR_MODEL` | `llama3.2` / `llava-phi3` | Text-scoring and vision-OCR models. |
+| `LLM_MAX_RETRIES` / `LLM_TIMEOUT_SECONDS` | `2` / `120` | Resilience around LLM calls. |
+| `OCR_MAX_WORKERS` | `0` (auto) | Parallel OCR concurrency. |
+
+The legacy `OLLAMA_EVAL_MODEL` / `OLLAMA_OCR_MODEL` / `OLLAMA_EVAL_SEED` names are
+still accepted for backward compatibility.
+
+### Switching to an OpenAI-compatible provider
+
+```env
+LLM_PROVIDER=openai
+OPENAI_BASE_URL=https://api.openai.com/v1   # or your vLLM / gateway URL
+OPENAI_API_KEY=sk-...
+LLM_EVAL_MODEL=gpt-4o-mini
+LLM_OCR_MODEL=gpt-4o-mini                    # must be vision-capable
+```
+
+## Operations
+
+- **Health / readiness:** `GET /health` is a liveness probe; `GET /ready` verifies
+  MinIO connectivity and returns per-dependency status for orchestrator readiness probes.
+- **Request tracing:** every request is tagged with a `request_id` (honouring an
+  inbound `X-Request-ID` header, else generated) that is bound to every log line
+  for that request and echoed back in the `X-Request-ID` response header.

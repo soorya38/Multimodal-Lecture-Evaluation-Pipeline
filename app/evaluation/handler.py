@@ -20,7 +20,8 @@ router = APIRouter(
     description=(
         "Accepts a video upload along with metadata (person name, subject, timing), "
         "runs the full extraction pipeline (split, frames, transcribe, OCR, consolidate), "
-        "and evaluates the technical accuracy, grammar, and language mix using Gemini."
+        "and evaluates the technical accuracy, grammar, and language mix using the "
+        "configured LLM provider (Ollama or an OpenAI-compatible endpoint)."
     ),
 )
 async def evaluate_lecture(
