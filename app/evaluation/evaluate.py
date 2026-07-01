@@ -4,6 +4,7 @@ import structlog
 
 from app.core.config import get_settings
 from app.core.llm import get_llm_client
+from app.evaluation.grounding import build_grounding_context
 
 logger = structlog.get_logger(__name__)
 
@@ -49,18 +50,29 @@ def _require_score(result: dict[str, Any], key: str) -> float:
         raise ValueError(f"Model reply key '{key}' is not numeric: {result[key]!r}") from e
 
 
-def evaluate_technical(consolidated: dict[str, Any], subject: str) -> float:
+def evaluate_technical(
+    consolidated: dict[str, Any],
+    subject: str,
+    reference_material: str | None = None,
+) -> float:
     """
     Evaluate the technical accuracy of the lecture content against the given subject.
 
-    Sends the full transcript and visual content to Ollama with a rubric that scores:
+    Sends the full transcript and visual content to the configured LLM with a
+    rubric that scores:
     - Correctness of concepts explained
     - Depth and completeness of coverage
     - Accuracy of examples, diagrams, and formulas
 
+    When ``reference_material`` is provided, the evaluation is *grounded*: the most
+    relevant passages of the reference are retrieved and the model is instructed to
+    judge correctness against them rather than on prior belief alone.
+
     Args:
         consolidated: The parsed consolidated.json document.
         subject: The subject/topic the lecture is supposed to cover.
+        reference_material: Optional authoritative source text (syllabus, textbook
+            excerpt, notes) to ground the correctness judgement.
 
     Returns:
         A technical accuracy score from 0 to 100.
@@ -81,6 +93,31 @@ def evaluate_technical(consolidated: dict[str, Any], subject: str) -> float:
         if parts:
             visual_summary += f"\n[{frame.get('frame', 'unknown')}]\n" + "\n".join(parts) + "\n"
 
+    # Optionally ground the evaluation against supplied reference material.
+    grounding_section = ""
+    grounding_instruction = ""
+    grounded = False
+    if reference_material and reference_material.strip():
+        settings = get_settings()
+        context = build_grounding_context(
+            reference_text=reference_material,
+            query_text=f"{subject}\n{transcript_text}\n{visual_summary}",
+            top_k=settings.grounding_top_k,
+            chunk_chars=settings.grounding_chunk_chars,
+        )
+        if context:
+            grounded = True
+            grounding_section = (
+                "\n## Reference Material (authoritative source of truth):\n"
+                f"{context}\n"
+            )
+            grounding_instruction = (
+                "Judge **Correctness** strictly against the Reference Material above: "
+                "reward claims that agree with it and penalise claims that contradict or "
+                "misstate it. Do not rely on outside assumptions where the reference is "
+                "authoritative.\n"
+            )
+
     prompt = f"""You are an expert academic evaluator. Evaluate the technical accuracy of the following lecture on the subject: "{subject}".
 
 ## Transcript (what the lecturer said):
@@ -88,9 +125,9 @@ def evaluate_technical(consolidated: dict[str, Any], subject: str) -> float:
 
 ## Visual Content (what was on the slides/board):
 {visual_summary if visual_summary else "No visual content available."}
-
+{grounding_section}
 ## Evaluation Rubric:
-Score the lecture on a scale of 0-100 based on:
+{grounding_instruction}Score the lecture on a scale of 0-100 based on:
 1. **Correctness** (40%): Are the concepts, definitions, and explanations technically accurate?
 2. **Completeness** (30%): Does the lecture cover the key aspects of "{subject}" adequately?
 3. **Clarity** (30%): Are examples, diagrams, and explanations clear and well-structured?
@@ -99,7 +136,7 @@ Return ONLY a JSON object with this exact structure:
 {{"technical_score": <number between 0 and 100>}}
 """
 
-    logger.info("Running technical evaluation via configured LLM", subject=subject)
+    logger.info("Running technical evaluation via configured LLM", subject=subject, grounded=grounded)
 
     try:
         result = _call_llm(prompt)

@@ -38,6 +38,14 @@ async def submit_evaluation(
     person_name: str = Form(..., description="Name of the person delivering the lecture."),
     subject: str = Form(..., description="The main subject or topic of the lecture."),
     timing: str = Form(..., description="Timing or duration context."),
+    reference_material: str | None = Form(
+        default=None,
+        description=(
+            "Optional authoritative source text (syllabus, textbook excerpt, notes). "
+            "When provided, the technical score is grounded against the most relevant "
+            "passages instead of the model's prior knowledge alone."
+        ),
+    ),
 ) -> EvaluateJobAccepted:
     """
     Accept an upload, persist it to disk, register a job, and schedule background
@@ -84,6 +92,7 @@ async def submit_evaluation(
         person_name=person_name,
         subject=subject,
         timing=timing,
+        reference_material=reference_material,
     )
 
     logger.info("Accepted evaluation job", job_id=job_id, filename=video.filename, subject=subject)

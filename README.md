@@ -47,6 +47,31 @@ Job status is persisted in MinIO (`jobs/{job_id}.json`), so it can be polled fro
 worker and survives restarts. The individual `/api/v1/media/*` stage endpoints remain
 available for running the pipeline step by step.
 
+### Grounding the technical score (optional)
+
+Pass `reference_material` (an authoritative source — syllabus, textbook excerpt, notes)
+to ground the technical evaluation. When supplied, the most relevant passages are
+retrieved and the model scores correctness **against the reference** rather than on its
+prior knowledge alone:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/evaluate \
+  -F video=@lecture.mp4 -F person_name="Alice" -F subject="Databases" -F timing="45m" \
+  -F reference_material="A B-tree of order m has at most m children ... (reference text)"
+```
+
+## Accuracy features
+
+- **Subject-biased transcription** — the lecture subject is fed to Whisper as an initial
+  prompt to improve recognition of domain terms and proper nouns (`WHISPER_BIAS_WITH_SUBJECT`).
+- **Slide de-duplication** — near-identical slide frames (the same slide re-captured across
+  scenes) are removed with a perceptual hash before OCR, saving cost and preventing repeated
+  slides from over-weighting the visual content (`FRAME_DEDUP_*`).
+- **Grounded technical scoring (RAG-lite)** — when `reference_material` is supplied, relevant
+  passages are retrieved with a dependency-free TF-IDF ranker and injected into the rubric so
+  correctness is judged against the source (`GROUNDING_*`). No vector database required; the
+  retriever is isolated so it can later be swapped for embeddings.
+
 The sequence below shows the underlying stages the background job executes:
 
 ```mermaid
@@ -141,6 +166,9 @@ adjust. Key settings:
 | `LLM_EVAL_MODEL` / `LLM_OCR_MODEL` | `llama3.2` / `llava-phi3` | Text-scoring and vision-OCR models. |
 | `LLM_MAX_RETRIES` / `LLM_TIMEOUT_SECONDS` | `2` / `120` | Resilience around LLM calls. |
 | `OCR_MAX_WORKERS` | `0` (auto) | Parallel OCR concurrency. |
+| `WHISPER_BIAS_WITH_SUBJECT` | `true` | Bias transcription toward the subject's vocabulary. |
+| `FRAME_DEDUP_ENABLED` / `FRAME_DEDUP_HAMMING_THRESHOLD` | `true` / `5` | De-duplicate near-identical slide frames before OCR. |
+| `GROUNDING_TOP_K` / `GROUNDING_CHUNK_CHARS` | `6` / `1200` | Reference-material retrieval for grounded technical scoring. |
 
 The legacy `OLLAMA_EVAL_MODEL` / `OLLAMA_OCR_MODEL` / `OLLAMA_EVAL_SEED` names are
 still accepted for backward compatibility.

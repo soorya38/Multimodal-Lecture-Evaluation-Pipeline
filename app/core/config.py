@@ -86,6 +86,29 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = Field(default=120.0, validation_alias="LLM_TIMEOUT_SECONDS")
     llm_max_retries: int = Field(default=2, validation_alias="LLM_MAX_RETRIES")
 
+    # --- Accuracy ---
+    # Bias transcription toward the lecture's domain vocabulary by feeding the
+    # subject to Whisper as an initial prompt (improves technical-term accuracy).
+    whisper_bias_with_subject: bool = Field(
+        default=True, validation_alias="WHISPER_BIAS_WITH_SUBJECT"
+    )
+    # Drop near-duplicate slide frames (same slide re-captured across scenes)
+    # before OCR, using a perceptual hash. Saves OCR cost and stops repeated
+    # slides from over-weighting the visual content.
+    frame_dedup_enabled: bool = Field(default=True, validation_alias="FRAME_DEDUP_ENABLED")
+    # Max Hamming distance (0–64) between two frame hashes to treat them as the
+    # same slide. Higher = more aggressive de-duplication. 0 disables fuzzy match
+    # (exact-hash only).
+    frame_dedup_hamming_threshold: int = Field(
+        default=5, ge=0, le=64, validation_alias="FRAME_DEDUP_HAMMING_THRESHOLD"
+    )
+    # Technical-score grounding: when reference material is supplied for a lecture,
+    # retrieve this many most-relevant chunks to ground the technical rubric.
+    grounding_top_k: int = Field(default=6, ge=1, le=50, validation_alias="GROUNDING_TOP_K")
+    grounding_chunk_chars: int = Field(
+        default=1200, ge=200, le=8000, validation_alias="GROUNDING_CHUNK_CHARS"
+    )
+
     # --- Derived helpers -------------------------------------------------
     def resolved_cpu_threads(self) -> int:
         """CPU thread count for Whisper — 0 means 'use all available cores'."""
