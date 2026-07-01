@@ -18,6 +18,37 @@ Weighted rubric-based scoring and report generation
 Input: Lecture video
 Output: Technical score, grammar score, language-mix analysis, and detailed evaluation report.
 
+## API usage
+
+Evaluation runs **asynchronously** — a lecture can take many minutes, so the pipeline
+does not block the HTTP request.
+
+1. **Submit** a video and get a job id back immediately:
+
+   ```bash
+   curl -X POST http://localhost:8000/api/v1/evaluate \
+     -F video=@lecture.mp4 \
+     -F person_name="Alice" \
+     -F subject="Databases" \
+     -F timing="45m"
+   # -> 202 Accepted: {"job_id": "…", "status": "queued"}
+   ```
+
+2. **Poll** for progress and the final scores:
+
+   ```bash
+   curl http://localhost:8000/api/v1/evaluate/{job_id}
+   # running:   {"status":"running","stage":"ocr", ...}
+   # completed: {"status":"completed","result":{"technical_score":…, ...}}
+   # failed:    {"status":"failed","error":"…"}
+   ```
+
+Job status is persisted in MinIO (`jobs/{job_id}.json`), so it can be polled from any
+worker and survives restarts. The individual `/api/v1/media/*` stage endpoints remain
+available for running the pipeline step by step.
+
+The sequence below shows the underlying stages the background job executes:
+
 ```mermaid
 sequenceDiagram
     participant Client

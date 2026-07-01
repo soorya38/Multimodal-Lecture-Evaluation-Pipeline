@@ -82,47 +82,74 @@ async def split_and_store(file: UploadFile) -> SplitMediaResponse:
 
         logger.info("Saved uploaded file to disk", path=input_path)
 
-        # --- 2. Run FFmpeg ---
-        video_out = os.path.join(tmp_dir, EXTRACTED_VIDEO_FILE_NAME)
-        audio_out = os.path.join(tmp_dir, EXTRACTED_AUDIO_FILE_NAME)
-
-        await split_video_audio(input_path, video_out, audio_out)
-
-        # --- 3. Upload results to MinIO ---
-        video_key = f"{upload_id}/{EXTRACTED_VIDEO_FILE_NAME}"
-        audio_key = f"{upload_id}/{EXTRACTED_AUDIO_FILE_NAME}"
-
-        upload_file(
-            bucket=_default_bucket(),
-            object_name=video_key,
-            file_path=video_out,
-            content_type=CONTENT_TYPE_VIDEO,
-        )
-        upload_file(
-            bucket=_default_bucket(),
-            object_name=audio_key,
-            file_path=audio_out,
-            content_type=CONTENT_TYPE_AUDIO,
-        )
-
-        logger.info(
-            "Split and store completed",
-            upload_id=upload_id,
-            video_key=video_key,
-            audio_key=audio_key,
-        )
-
-        return SplitMediaResponse(
-            upload_id=upload_id,
-            video_object_key=video_key,
-            audio_object_key=audio_key,
-            bucket=_default_bucket(),
-        )
+        # --- 2-3. Split with FFmpeg and upload both streams ---
+        return await _split_saved_input(upload_id, input_path)
 
     finally:
         # --- 4. Clean up temp files regardless of success or failure ---
         shutil.rmtree(tmp_dir, ignore_errors=True)
         logger.info("Cleaned up temporary directory", tmp_dir=tmp_dir)
+
+
+async def split_stored_file(input_path: str) -> SplitMediaResponse:
+    """
+    Split a media file that is already present on local disk.
+
+    Identical to :func:`split_and_store` but skips the upload-streaming step —
+    used by the asynchronous evaluation job, where the request handler has
+    already persisted the upload to disk before returning ``202 Accepted``.
+    """
+    upload_id = uuid.uuid4().int
+    tmp_dir = tempfile.mkdtemp(prefix=f"media_split_{upload_id}_")
+    logger.info("Starting split_stored_file", upload_id=upload_id, input_path=input_path, tmp_dir=tmp_dir)
+    try:
+        return await _split_saved_input(upload_id, input_path, work_dir=tmp_dir)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        logger.info("Cleaned up temporary directory", tmp_dir=tmp_dir)
+
+
+async def _split_saved_input(
+    upload_id: int,
+    input_path: str,
+    work_dir: str | None = None,
+) -> SplitMediaResponse:
+    """
+    Run FFmpeg on an on-disk input and upload the video/audio streams to MinIO.
+
+    ``work_dir`` is where the intermediate outputs are written; it defaults to the
+    directory containing ``input_path``. The caller owns cleanup of both.
+    """
+    work_dir = work_dir or os.path.dirname(input_path)
+    video_out = os.path.join(work_dir, EXTRACTED_VIDEO_FILE_NAME)
+    audio_out = os.path.join(work_dir, EXTRACTED_AUDIO_FILE_NAME)
+
+    await split_video_audio(input_path, video_out, audio_out)
+
+    video_key = f"{upload_id}/{EXTRACTED_VIDEO_FILE_NAME}"
+    audio_key = f"{upload_id}/{EXTRACTED_AUDIO_FILE_NAME}"
+
+    upload_file(
+        bucket=_default_bucket(),
+        object_name=video_key,
+        file_path=video_out,
+        content_type=CONTENT_TYPE_VIDEO,
+    )
+    upload_file(
+        bucket=_default_bucket(),
+        object_name=audio_key,
+        file_path=audio_out,
+        content_type=CONTENT_TYPE_AUDIO,
+    )
+
+    logger.info("Split and store completed", upload_id=upload_id, video_key=video_key, audio_key=audio_key)
+
+    return SplitMediaResponse(
+        upload_id=upload_id,
+        video_object_key=video_key,
+        audio_object_key=audio_key,
+        bucket=_default_bucket(),
+    )
 
 
 async def extract_frames_and_store(
